@@ -1,26 +1,28 @@
 # ==============================
-# SilverFoxFlow — Market UOA 2.0
+# SilverFoxFlow — Market UOA 2.0 (UW + Backtest-optional)
 # ==============================
-# - Live scan from Unusual Whales API (via Secrets)
-# - Endpoint auto-discovery (no guessing paths)
-# - Per-ticker UOA 2.0 aggregation
-# - Ranked picks + simple underlying backtest
-
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Any
-
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
-import yfinance as yf
+
+# --- optional import: yfinance (backtest depends on it) ---
+try:
+    import yfinance as yf
+    HAS_YF = True
+except Exception:
+    HAS_YF = False
 
 # -----------------------------
-# Page / Layout
+# Page / Build tag
 # -----------------------------
 st.set_page_config(page_title="SilverFoxFlow — Market UOA Scanner", page_icon="🦊", layout="wide")
 st.title("🦊 SilverFoxFlow — Market UOA Scanner")
+BUILD_TAG = datetime.utcnow().strftime("Build %Y-%m-%d %H:%M:%S UTC")
+st.sidebar.success(BUILD_TAG)
 st.caption("We scan institutional options flow across the market and surface the strongest, cleanest signals.")
 
 # -----------------------------
@@ -114,7 +116,7 @@ def fetch_flow_generic(api_url: str, api_key: str, window_min: int) -> pd.DataFr
         "/flow",
     ]
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    params  = {"minutes": window_min, "window_min": window_min}  # prefer 'minutes'
+    params  = {"minutes": window_min, "window_min": window_min}
     base = api_url.rstrip("/")
 
     last_err = None
@@ -179,7 +181,7 @@ def fetch_flow_generic(api_url: str, api_key: str, window_min: int) -> pd.DataFr
         except requests.HTTPError as e:
             last_err = f"{e.response.status_code} at {url}"
             if e.response is not None and e.response.status_code in (401, 403):
-                raise  # auth/plan issue — bubble up
+                raise
             continue
         except Exception as e:
             last_err = str(e)
@@ -248,13 +250,15 @@ def summarize_ticker(g: pd.DataFrame) -> Dict[str, Any]:
                 bull=bull, bear=bear, dominance=dominance, avg_aggr=avg_aggr, prints=prints)
 
 # -----------------------------
-# Backtest helpers (underlying)
+# Backtest helpers (underlying) — only if HAS_YF
 # -----------------------------
 BT_HOLD_DAYS_DEFAULT = 5
-BT_TP_DEFAULT = 0.12   # +12%
-BT_SL_DEFAULT = -0.07  # -7%
+BT_TP_DEFAULT = 0.12
+BT_SL_DEFAULT = -0.07
 
 def fetch_prices_yf(ticker: str, start: str, end: str) -> pd.DataFrame:
+    if not HAS_YF:
+        return pd.DataFrame()
     df = yf.download(ticker, start=start, end=end, interval="1d", auto_adjust=True, progress=False)
     if df.empty:
         return df
@@ -386,68 +390,71 @@ if "res" in st.session_state:
     st.dataframe(res.reset_index(drop=True), use_container_width=True, hide_index=True)
 
     # -------------------------
-    # Backtest UI
+    # Backtest UI (only if yfinance installed)
     # -------------------------
     st.divider()
     st.subheader("🧪 Backtest (underlying returns)")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        bt_days = st.slider("Hold days", 2, 15, value=BT_HOLD_DAYS_DEFAULT)
-    with col2:
-        bt_tp = st.slider("Take-profit (%)", 3, 30, value=int(abs(BT_TP_DEFAULT)*100)) / 100.0
-    with col3:
-        bt_sl = - st.slider("Stop-loss (%)", 2, 20, value=int(abs(BT_SL_DEFAULT)*100)) / 100.0
+    if not HAS_YF:
+        st.info("Backtest needs `yfinance`. Add it to requirements.txt and redeploy to enable this section.")
+    else:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            bt_days = st.slider("Hold days", 2, 15, value=BT_HOLD_DAYS_DEFAULT)
+        with col2:
+            bt_tp = st.slider("Take-profit (%)", 3, 30, value=int(abs(BT_TP_DEFAULT)*100)) / 100.0
+        with col3:
+            bt_sl = - st.slider("Stop-loss (%)", 2, 20, value=int(abs(BT_SL_DEFAULT)*100)) / 100.0
 
-    run_bt = st.button("▶️ Run Backtest", type="secondary")
+        run_bt = st.button("▶️ Run Backtest", type="secondary")
 
-    if run_bt:
-        edf = st.session_state.get("flow_for_bt")
-        if edf is None or edf.empty:
-            st.warning("No eligible flow to backtest. Scan first.")
-        else:
-            edf = edf.copy()
-            edf["timestamp"] = pd.to_datetime(edf["timestamp"])
-            signals = build_daily_signals(edf)
-            if signals.empty:
-                st.warning("No signals produced for backtest with current filters.")
+        if run_bt:
+            edf = st.session_state.get("flow_for_bt")
+            if edf is None or edf.empty:
+                st.warning("No eligible flow to backtest. Scan first.")
             else:
-                start = (datetime.utcnow() - timedelta(days=180)).strftime("%Y-%m-%d")
-                end   = datetime.utcnow().strftime("%Y-%m-%d")
-                trades = backtest_signals(signals, start, end, bt_days, bt_sl, bt_tp)
-                if trades.empty:
-                    st.warning("No trades could be simulated (price data missing).")
+                edf = edf.copy()
+                edf["timestamp"] = pd.to_datetime(edf["timestamp"])
+                signals = build_daily_signals(edf)
+                if signals.empty:
+                    st.warning("No signals produced for backtest with current filters.")
                 else:
-                    wins = (trades["ret"] > 0).sum()
-                    total = len(trades)
-                    win_rate = (wins/total)*100 if total else 0.0
-                    avg_ret = float(trades["ret"].mean()) if total else 0.0
-                    best = float(trades["ret"].max()); worst = float(trades["ret"].min())
+                    start = (datetime.utcnow() - timedelta(days=180)).strftime("%Y-%m-%d")
+                    end   = datetime.utcnow().strftime("%Y-%m-%d")
+                    trades = backtest_signals(signals, start, end, bt_days, bt_sl, bt_tp)
+                    if trades.empty:
+                        st.warning("No trades could be simulated (price data missing).")
+                    else:
+                        wins = (trades["ret"] > 0).sum()
+                        total = len(trades)
+                        win_rate = (wins/total)*100 if total else 0.0
+                        avg_ret = float(trades["ret"].mean()) if total else 0.0
+                        best = float(trades["ret"].max()); worst = float(trades["ret"].min())
 
-                    m1, m2, m3, m4, m5 = st.columns(5)
-                    m1.metric("Trades", f"{total}")
-                    m2.metric("Win %", f"{win_rate:.1f}%")
-                    m3.metric("Avg Return", f"{avg_ret*100:.2f}%")
-                    m4.metric("Best", f"{best*100:.1f}%")
-                    m5.metric("Worst", f"{worst*100:.1f}%")
-                    st.caption("Rule: Enter next day open after a signal; exit on TP/SL intraday or after hold-days at close.")
+                        m1, m2, m3, m4, m5 = st.columns(5)
+                        m1.metric("Trades", f"{total}")
+                        m2.metric("Win %", f"{win_rate:.1f}%")
+                        m3.metric("Avg Return", f"{avg_ret*100:.2f}%")
+                        m4.metric("Best", f"{best*100:.1f}%")
+                        m5.metric("Worst", f"{worst*100:.1f}%")
+                        st.caption("Rule: Enter next day open after a signal; exit on TP/SL intraday or after hold-days at close.")
 
-                    by_tkr = (trades.assign(pct=lambda d: d["ret"]*100)
-                                    .groupby("ticker")
-                                    .agg(trades=("ret","count"),
-                                         win_pct=("ret", lambda s: (s>0).mean()*100),
-                                         avg_ret=("ret","mean"))
-                                    .reset_index()
-                                    .sort_values(["trades","win_pct"], ascending=[False, False]))
-                    by_tkr["avg_ret"] = (by_tkr["avg_ret"]*100).round(2)
+                        by_tkr = (trades.assign(pct=lambda d: d["ret"]*100)
+                                        .groupby("ticker")
+                                        .agg(trades=("ret","count"),
+                                             win_pct=("ret", lambda s: (s>0).mean()*100),
+                                             avg_ret=("ret","mean"))
+                                        .reset_index()
+                                        .sort_values(["trades","win_pct"], ascending=[False, False]))
+                        by_tkr["avg_ret"] = (by_tkr["avg_ret"]*100).round(2)
 
-                    st.subheader("Per-Ticker Performance")
-                    st.dataframe(by_tkr, use_container_width=True, hide_index=True)
+                        st.subheader("Per-Ticker Performance")
+                        st.dataframe(by_tkr, use_container_width=True, hide_index=True)
 
-                    st.subheader("Sample Trades")
-                    st.dataframe(trades.assign(pct=lambda d: (d["ret"]*100).round(2))
-                                         .sort_values("date", ascending=False)
-                                         .head(50)
-                                         .reset_index(drop=True),
-                                 use_container_width=True, hide_index=True)
+                        st.subheader("Sample Trades")
+                        st.dataframe(trades.assign(pct=lambda d: (d["ret"]*100).round(2))
+                                             .sort_values("date", ascending=False)
+                                             .head(50)
+                                             .reset_index(drop=True),
+                                     use_container_width=True, hide_index=True)
 else:
     st.info("Click **Scan Market** to fetch institutional flow and generate signals.")
