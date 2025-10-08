@@ -59,6 +59,16 @@ EXP_MIN_W, EXP_MAX_W = 1, 6  # near-term: 1–6 weeks to expiry
 REQ_VOL_GT_OI = True
 TOP_N = 10               # show top 10 tickers
 
+# Runtime-configurable knobs gathered from the sidebar (no `global` needed)
+CFG = {
+    "MIN_PREM": MIN_PREM,
+    "MIN_PRINTS": MIN_PRINTS,
+    "MIN_AGGR_RATIO": MIN_AGGR_RATIO,
+    "EXP_MIN_W": EXP_MIN_W,
+    "EXP_MAX_W": EXP_MAX_W,
+}
+
+
 # =========================
 # ---- Helper Utilities ----
 # =========================
@@ -87,7 +97,7 @@ def weeks_to_expiry(expiry_dt: datetime, now_dt: datetime) -> float:
 
 def eligible(row: pd.Series, now_dt: datetime) -> bool:
     w = weeks_to_expiry(_to_dt(row.get("expiry")), now_dt)
-    if not (EXP_MIN_W <= w <= EXP_MAX_W):
+    if not (CFG["EXP_MIN_W"] <= w <= CFG["EXP_MAX_W"]):
         return False
     if REQ_VOL_GT_OI:
         vol = row.get("volume", np.nan)
@@ -298,8 +308,23 @@ def verdict_from_agg(agg: FlowAggregate) -> Tuple[str, float, float]:
     share_calls = agg.call_prem / tot
     share_puts = agg.put_prem / tot
 
-    if tot < MIN_PREM or agg.prints < MIN_PRINTS:
+    if tot < CFG["MIN_PREM"] or agg.prints < CFG["MIN_PRINTS"]:
         return ("NO TRADE", share_calls, share_puts)
+
+    if agg.net_direction() > 0:  # leaning calls
+        if share_calls >= SHARE_ENTRY and agg.call_aggr_ratio >= CFG["MIN_AGGR_RATIO"]:
+            return ("BUY CALLS", share_calls, share_puts)
+    else:  # leaning puts
+        if share_puts >= SHARE_ENTRY and agg.put_aggr_ratio >= CFG["MIN_AGGR_RATIO"]:
+            return ("BUY PUTS", share_calls, share_puts)
+
+    # Force flip if one side is overwhelming
+    if share_calls >= SHARE_FORCE_FLIP and agg.call_aggr_ratio >= CFG["MIN_AGGR_RATIO"]:
+        return ("BUY CALLS", share_calls, share_puts)
+    if share_puts >= SHARE_FORCE_FLIP and agg.put_aggr_ratio >= CFG["MIN_AGGR_RATIO"]:
+        return ("BUY PUTS", share_calls, share_puts)
+
+    return ("NO TRADE", share_calls, share_puts)
 
     if agg.net_direction() > 0:  # leaning calls
         if share_calls >= SHARE_ENTRY and agg.call_aggr_ratio >= MIN_AGGR_RATIO:
