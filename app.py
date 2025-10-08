@@ -1,32 +1,14 @@
-# SilverFoxFlow — UOA 2.0 Scanner with Backtester
+# SilverFoxFlow — CLEAN REBUILD
+# UOA 2.0 scanner using Unusual Whales + Backtester + optional VWAP confirmation
+# Streamlit app — drop-in replacement for app.py
 # -------------------------------------------------
-# Streamlit app that ingests Unusual Whales (UW) flow, applies low-noise institutional filters,
-# computes a Smart Money Score, and outputs decisive trade verdicts: BUY CALLS / BUY PUTS / NO TRADE.
-# Includes a lightweight backtester on underlying price moves (proxy for options P/L).
-#
-# 🔧 How to run locally:
-#   1) pip install streamlit pandas numpy requests pydantic yfinance python-dateutil
-#   2) export UNUSUAL_WHALES_API_KEY="<your_key>"  (or set in .streamlit/secrets.toml as UW_API_KEY)
-#   3) streamlit run app.py
-#
-# 🧠 Backtest method (simple, transparent):
-#   - Uses yfinance to pull underlying OHLC.
-#   - A signal is generated per ticker when the scanner says BUY CALLS or BUY PUTS.
-#   - Entry = close price of the signal day (configurable intraday proxy, but close is robust).
-#   - Exit rule (configurable): take-profit % or stop-loss % OR fixed holding period.
-#   - Win/Loss and expectancy computed across signals.
-#
-# 📝 Notes:
-#   - The exact Unusual Whales REST endpoints and field names vary by plan; this file provides a
-#     robust fetch layer you can adapt in `fetch_uw_flows_api()`.
-#   - If API fetch fails, you can upload a CSV export from UW with plausible columns; the mapper
-#     tries to normalize columns (ticker, side, price, premium, expiry, is_sweep, is_block,
-#     at_ask_flag, below_bid_flag, size, volume, open_interest, timestamp).
-#   - The goal is to keep your logic deterministic and auditable for your users.
+# How to run locally:
+#   pip install streamlit pandas numpy requests yfinance python-dateutil
+#   export UNUSUAL_WHALES_API_KEY="<your_key>"   # or set Streamlit Secrets -> UW_API_KEY
+#   streamlit run app.py
 
 from __future__ import annotations
 import os
-import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
@@ -39,7 +21,7 @@ import yfinance as yf
 from dateutil import tz
 
 # =========================
-# ----- CONFIG / UX -------
+# ---- App Config ----------
 # =========================
 st.set_page_config(
     page_title="SilverFoxFlow — UOA 2.0",
@@ -47,19 +29,19 @@ st.set_page_config(
     layout="wide",
 )
 
-# Default Filters (from your last spec)
-WINDOW_MIN = 45          # rolling minutes of flow to consider in live mode
-LOCK_MIN = 20            # grace/lock window to avoid chasing too-late flow
-SHARE_ENTRY = 0.70       # threshold for decisive direction to recommend entry
-SHARE_FORCE_FLIP = 0.78  # if opposite-side share > this, flip verdict
-MIN_PREM = 3_000_000     # minimum total premium per ticker in window
-MIN_PRINTS = 8           # minimum number of sweeps/blocks
-MIN_AGGR_RATIO = 0.60    # prints at/above ask (calls) or below bid (puts)
-EXP_MIN_W, EXP_MAX_W = 1, 6  # near-term: 1–6 weeks to expiry
+# Base defaults (can be overridden from the sidebar)
+WINDOW_MIN = 45          # minutes of recent flow
+LOCK_MIN = 20            # grace/lock window to avoid too-late flow (kept for future use)
+SHARE_ENTRY = 0.70       # threshold to enter on majority side
+SHARE_FORCE_FLIP = 0.78  # very strong side => flip
+MIN_PREM = 3_000_000     # $ premium per ticker window
+MIN_PRINTS = 8           # number of institutional prints
+MIN_AGGR_RATIO = 0.60    # at/above ask (calls) or below bid (puts)
+EXP_MIN_W, EXP_MAX_W = 1, 6  # weeks to expiry
 REQ_VOL_GT_OI = True
-TOP_N = 10               # show top 10 tickers
+TOP_N = 10               # signals to show per side
 
-# Runtime-configurable knobs gathered from the sidebar (no `global` needed)
+# Runtime-configurable knobs (no `global` usage anywhere)
 CFG = {
     "MIN_PREM": MIN_PREM,
     "MIN_PRINTS": MIN_PRINTS,
@@ -68,9 +50,8 @@ CFG = {
     "EXP_MAX_W": EXP_MAX_W,
 }
 
-
 # =========================
-# ---- Helper Utilities ----
+# ---- Helpers -------------
 # =========================
 
 def _to_dt(x) -> datetime:
@@ -91,7 +72,7 @@ def time_weight(minutes_old: float) -> float:
 
 
 def weeks_to_expiry(expiry_dt: datetime, now_dt: datetime) -> float:
-    d = (expiry_dt - now_dt).days + (expiry_dt - now_dt).seconds/86400
+    d = (expiry_dt - now_dt).days + (expiry_dt - now_dt).seconds / 86400
     return max(0.0, d / 7.0)
 
 
@@ -121,32 +102,25 @@ class FlowAggregate:
     total_premium: float
 
     def net_direction(self) -> float:
-        # +1 = all calls, -1 = all puts
         tot = self.call_prem + self.put_prem + 1e-9
         return (self.call_prem - self.put_prem) / tot
 
 
 # =========================
-# -- Fetch & Normalize UW --
+# ---- UW Fetch & Normalize-
 # =========================
 
 @st.cache_data(show_spinner=False, ttl=120)
 def fetch_uw_flows_api(start_dt: datetime, end_dt: datetime, api_key: Optional[str]) -> pd.DataFrame:
-    """
-    Fetch recent UW option flow between start_dt and end_dt.
-    This is a placeholder you can wire to the official Unusual Whales endpoint you use.
-
-    Expected fields in the returned DataFrame (or will be mapped by normalize_uw_columns):
-      - ticker, side (CALL/PUT), price, premium, expiry, is_sweep, is_block,
-        at_ask_flag, below_bid_flag, size, volume, open_interest, timestamp
+    """Fetch Unusual Whales flow. Replace URL/params to match your plan.
+    Expected columns (or mappable via normalize_uw_columns):
+    ticker, side(CALL/PUT), price, premium, expiry, is_sweep, is_block,
+    at_ask_flag, below_bid_flag, size, volume, open_interest, timestamp, strike
     """
     if not api_key:
         return pd.DataFrame()
-
-    # TODO: Replace with your actual UW endpoint + params.
-    # The below is a schematic example — adjust path/params to match your plan.
     try:
-        url = "https://api.unusualwhales.com/flow"  # <-- placeholder
+        url = "https://api.unusualwhales.com/flow"  # <— placeholder, update to your real endpoint
         headers = {"Authorization": f"Bearer {api_key}"}
         params = {
             "start": start_dt.replace(tzinfo=timezone.utc).isoformat(),
@@ -167,10 +141,9 @@ def normalize_uw_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Try to map common/guessable column names from UW exports to our canonical schema.
     colmap_candidates = {
         "ticker": ["ticker", "symbol", "underlying"],
-        "side": ["side", "type", "option_type"],  # CALL / PUT
+        "side": ["side", "type", "option_type"],
         "price": ["price", "fill_price", "trade_price"],
         "premium": ["premium", "trade_value", "notional"],
         "expiry": ["expiry", "expiration", "exp", "expiration_date"],
@@ -193,72 +166,61 @@ def normalize_uw_columns(df: pd.DataFrame) -> pd.DataFrame:
                 break
 
     out = df.rename(columns=renamed).copy()
-
-    # sanitize values
     out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce")
     out["expiry"] = pd.to_datetime(out["expiry"], errors="coerce")
-    out["premium"] = pd.to_numeric(out["premium"], errors="coerce")
-    out["price"] = pd.to_numeric(out["price"], errors="coerce")
-    out["size"] = pd.to_numeric(out["size"], errors="coerce")
-    out["volume"] = pd.to_numeric(out["volume"], errors="coerce")
-    out["open_interest"] = pd.to_numeric(out["open_interest"], errors="coerce")
-    out["strike"] = pd.to_numeric(out["strike"], errors="coerce")
+    num_cols = ["premium", "price", "size", "volume", "open_interest", "strike"]
+    for c in num_cols:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
 
-    # Side normalization
     out["side"] = out["side"].astype(str).str.upper().str.strip()
     out.loc[~out["side"].isin(["CALL", "PUT"]), "side"] = np.nan
 
-    # Boolean flags
     for b in ["is_sweep", "is_block", "at_ask_flag", "below_bid_flag"]:
         if b in out.columns:
             out[b] = out[b].astype(str).str.lower().isin(["1", "true", "t", "yes", "y"])
         else:
             out[b] = False
 
-    # Drop rows missing essentials
-    essentials = ["ticker", "side", "premium", "expiry", "timestamp"]
-    out = out.dropna(subset=essentials)
-
+    out = out.dropna(subset=["ticker", "side", "premium", "expiry", "timestamp"])
     return out
 
 
 # =========================
-# ---- Scoring Functions ---
+# ---- Scoring --------------
 # =========================
 
 def aggregate_flows(df: pd.DataFrame, now_dt: datetime) -> List[FlowAggregate]:
     if df.empty:
         return []
 
-    aggs: List[FlowAggregate] = []
-
-    # Restrict to near-term, eligible rows
     elig = df[df.apply(lambda r: eligible(r, now_dt), axis=1)].copy()
     if elig.empty:
         return []
 
-    # Compute recency weights per print
     elig["minutes_old"] = (now_dt - pd.to_datetime(elig["timestamp"]).dt.tz_convert(None)).dt.total_seconds() / 60.0
     elig["w"] = elig["minutes_old"].apply(time_weight)
 
-    # Agg per ticker
+    aggs: List[FlowAggregate] = []
     for tk, g in elig.groupby("ticker"):
         prints = len(g)
-        unique_strikes = g["strike"].nunique(dropna=True)
+        unique_strikes = g["strike"].nunique(dropna=True) if "strike" in g.columns else 0
         unique_exps = g["expiry"].nunique(dropna=True)
 
-        # Premium by side (weighted by recency)
-        call_prem = (g.loc[g["side"] == "CALL", "premium"] * g.loc[g["side"] == "CALL", "w"]).sum()
-        put_prem  = (g.loc[g["side"] == "PUT", "premium"] * g.loc[g["side"] == "PUT", "w"]).sum()
+        call_mask = g["side"] == "CALL"
+        put_mask = g["side"] == "PUT"
+        call_prem = (g.loc[call_mask, "premium"] * g.loc[call_mask, "w"]).sum()
+        put_prem  = (g.loc[put_mask, "premium"]  * g.loc[put_mask,  "w"]).sum()
 
-        # Aggression ratios
-        def safe_ratio(numer: pd.Series, denom: pd.Series) -> float:
-            num = (numer * g.loc[numer.index, "w"]).sum()
-            den = (denom * g.loc[denom.index, "w"]).sum() + 1e-9
+        def safe_ratio(flag_series: pd.Series, base_mask: pd.Series) -> float:
+            numer = (flag_series & base_mask).astype(int) * g["w"]
+            denom = base_mask.astype(int) * g["w"]
+            num = numer.sum()
+            den = denom.sum() + 1e-9
             return float(num / den)
 
-        call_aggr = safe_ratio(g["at_ask_flag"] & (g["side"] == "CALL"), g["side"] == "CALL")
-        put_aggr  = safe_ratio(g["below_bid_flag"] & (g["side"] == "PUT"), g["side"] == "PUT")
+        call_aggr = safe_ratio(g.get("at_ask_flag", pd.Series(False, index=g.index)), call_mask)
+        put_aggr  = safe_ratio(g.get("below_bid_flag", pd.Series(False, index=g.index)), put_mask)
 
         recency_score = float(g["w"].mean())
         total_premium = call_prem + put_prem
@@ -280,30 +242,18 @@ def aggregate_flows(df: pd.DataFrame, now_dt: datetime) -> List[FlowAggregate]:
 
 
 def smart_money_score(agg: FlowAggregate, prem_median: float) -> float:
-    # Components (0–100 total)
-    # 1) Premium heft (0–35): log-scaled vs universe median
+    # (0–100) premium heft + direction + aggression + clustering + recency
     heft = 35 * np.tanh(np.log1p(agg.total_premium) / (np.log1p(prem_median + 1e-9) + 1e-9))
-
-    # 2) Directional imbalance (0–25)
     dir_strength = 25 * abs(agg.net_direction())
-
-    # 3) Aggression (0–20)
-    call_aggr = agg.call_aggr_ratio if agg.net_direction() >= 0 else 0
-    put_aggr = agg.put_aggr_ratio if agg.net_direction() < 0 else 0
-    aggr_component = 20 * max(call_aggr, put_aggr)
-
-    # 4) Clustering / prints (0–10)
+    aggr_component = 20 * max(agg.call_aggr_ratio if agg.net_direction() >= 0 else 0,
+                              agg.put_aggr_ratio if agg.net_direction() < 0 else 0)
     cluster = 10 * np.tanh((agg.prints + agg.unique_strikes + agg.unique_exps) / 20)
-
-    # 5) Recency (0–10)
     recent = 10 * agg.recency_score
-
     score = float(heft + dir_strength + aggr_component + cluster + recent)
     return max(0.0, min(100.0, score))
 
 
 def verdict_from_agg(agg: FlowAggregate) -> Tuple[str, float, float]:
-    """Returns (verdict, share_calls, share_puts)."""
     tot = agg.call_prem + agg.put_prem + 1e-9
     share_calls = agg.call_prem / tot
     share_puts = agg.put_prem / tot
@@ -318,7 +268,6 @@ def verdict_from_agg(agg: FlowAggregate) -> Tuple[str, float, float]:
         if share_puts >= SHARE_ENTRY and agg.put_aggr_ratio >= CFG["MIN_AGGR_RATIO"]:
             return ("BUY PUTS", share_calls, share_puts)
 
-    # Force flip if one side is overwhelming
     if share_calls >= SHARE_FORCE_FLIP and agg.call_aggr_ratio >= CFG["MIN_AGGR_RATIO"]:
         return ("BUY CALLS", share_calls, share_puts)
     if share_puts >= SHARE_FORCE_FLIP and agg.put_aggr_ratio >= CFG["MIN_AGGR_RATIO"]:
@@ -326,37 +275,74 @@ def verdict_from_agg(agg: FlowAggregate) -> Tuple[str, float, float]:
 
     return ("NO TRADE", share_calls, share_puts)
 
-    if agg.net_direction() > 0:  # leaning calls
-        if share_calls >= SHARE_ENTRY and agg.call_aggr_ratio >= MIN_AGGR_RATIO:
-            return ("BUY CALLS", share_calls, share_puts)
-    else:  # leaning puts
-        if share_puts >= SHARE_ENTRY and agg.put_aggr_ratio >= MIN_AGGR_RATIO:
-            return ("BUY PUTS", share_calls, share_puts)
 
-    # Force flip if one side is overwhelming
-    if share_calls >= SHARE_FORCE_FLIP and agg.call_aggr_ratio >= MIN_AGGR_RATIO:
-        return ("BUY CALLS", share_calls, share_puts)
-    if share_puts >= SHARE_FORCE_FLIP and agg.put_aggr_ratio >= MIN_AGGR_RATIO:
-        return ("BUY PUTS", share_calls, share_puts)
+# =========================
+# ---- Tech Confirmation ----
+# =========================
 
-    return ("NO TRADE", share_calls, share_puts)
+def latest_vwap(ticker: str) -> Optional[float]:
+    """Compute session VWAP from 5m intraday; None on failure."""
+    try:
+        df = yf.download(tickers=ticker, period="1d", interval="5m", progress=False)
+        if df.empty or any(c not in df.columns for c in ["High", "Low", "Close", "Volume"]):
+            return None
+        typical = (df["High"] + df["Low"] + df["Close"]) / 3
+        vwap = (typical * df["Volume"]).sum() / max(1, df["Volume"].sum())
+        return float(vwap)
+    except Exception:
+        return None
+
+
+def apply_vwap_confirmation(signals_df: pd.DataFrame) -> pd.DataFrame:
+    """Keep CALLS if last price >= VWAP; PUTS if last price <= VWAP."""
+    kept = []
+    for _, r in signals_df.iterrows():
+        tk = r["Ticker"]
+        verdict = r["Verdict"]
+        try:
+            px = yf.Ticker(tk).history(period="1d").iloc[-1]["Close"]
+        except Exception:
+            kept.append(r)
+            continue
+        vwap = latest_vwap(tk)
+        if vwap is None:
+            kept.append(r)
+            continue
+        if verdict == "BUY CALLS" and px >= vwap:
+            kept.append(r)
+        elif verdict == "BUY PUTS" and px <= vwap:
+            kept.append(r)
+        elif verdict == "NO TRADE":
+            kept.append(r)
+    return pd.DataFrame(kept) if kept else signals_df
 
 
 # =========================
-# --------- UI -------------
+# ---- UI -------------------
 # =========================
 
 st.title("🦊 SilverFoxFlow — UOA 2.0")
-st.caption("Low-noise institutional flow scanner with decisive signals and a simple backtester.")
+st.caption("Low-noise institutional flow scanner with decisive signals, optional VWAP filter, and a simple backtester.")
 
 with st.sidebar:
     st.header("Configuration")
 
-    # API key input — env or secrets preferred
+    # Presets
+    preset = st.selectbox("Preset", ["Strict", "Standard", "Custom"], index=0)
+    if preset == "Strict":
+        CFG["MIN_PREM"] = 5_000_000
+        CFG["MIN_PRINTS"] = 10
+        CFG["MIN_AGGR_RATIO"] = 0.70
+        CFG["EXP_MIN_W"], CFG["EXP_MAX_W"] = 1, 5
+    elif preset == "Standard":
+        CFG["MIN_PREM"] = 3_000_000
+        CFG["MIN_PRINTS"] = 8
+        CFG["MIN_AGGR_RATIO"] = 0.60
+        CFG["EXP_MIN_W"], CFG["EXP_MAX_W"] = 1, 6
+
+    # API key (env or secrets)
     api_key = (
-        st.secrets.get("UW_API_KEY")
-        if hasattr(st, "secrets") and "UW_API_KEY" in st.secrets
-        else os.getenv("UNUSUAL_WHALES_API_KEY")
+        st.secrets.get("UW_API_KEY") if hasattr(st, "secrets") and "UW_API_KEY" in st.secrets else os.getenv("UNUSUAL_WHALES_API_KEY")
     )
     api_key = st.text_input("Unusual Whales API Key", value=api_key or "", type="password")
 
@@ -365,18 +351,21 @@ with st.sidebar:
     colA, colB = st.columns(2)
     with colA:
         window_min = st.number_input("Window (minutes)", min_value=10, max_value=240, value=WINDOW_MIN, step=5)
-        min_prem = st.number_input("Min total premium ($)", min_value=0, value=MIN_PREM, step=500000, format="%d")
-        min_prints = st.number_input("Min prints", min_value=0, value=MIN_PRINTS, step=1)
+        min_prem = st.number_input("Min total premium ($)", min_value=0, value=CFG["MIN_PREM"], step=500000, format="%d")
+        min_prints = st.number_input("Min prints", min_value=0, value=CFG["MIN_PRINTS"], step=1)
     with colB:
-        min_aggr = st.slider("Min aggression ratio", 0.0, 1.0, MIN_AGGR_RATIO, 0.01)
-        exp_min = st.number_input("Min weeks to expiry", min_value=0, max_value=52, value=EXP_MIN_W)
-        exp_max = st.number_input("Max weeks to expiry", min_value=1, max_value=52, value=EXP_MAX_W)
+        min_aggr = st.slider("Min aggression ratio", 0.0, 1.0, CFG["MIN_AGGR_RATIO"], 0.01)
+        exp_min = st.number_input("Min weeks to expiry", min_value=0, max_value=52, value=CFG["EXP_MIN_W"])
+        exp_max = st.number_input("Max weeks to expiry", min_value=1, max_value=52, value=CFG["EXP_MAX_W"]) 
 
-    global MIN_PREM, MIN_PRINTS, MIN_AGGR_RATIO, EXP_MIN_W, EXP_MAX_W
-    MIN_PREM = int(min_prem)
-    MIN_PRINTS = int(min_prints)
-    MIN_AGGR_RATIO = float(min_aggr)
-    EXP_MIN_W, EXP_MAX_W = int(exp_min), int(exp_max)
+    # Save into runtime CFG (no globals)
+    CFG["MIN_PREM"] = int(min_prem)
+    CFG["MIN_PRINTS"] = int(min_prints)
+    CFG["MIN_AGGR_RATIO"] = float(min_aggr)
+    CFG["EXP_MIN_W"], CFG["EXP_MAX_W"] = int(exp_min), int(exp_max)
+
+    st.markdown("---")
+    tech_confirm = st.checkbox("Require VWAP confirmation (live scan)", value=(preset == "Strict"))
 
     st.markdown("---")
     st.subheader("Backtest Settings")
@@ -436,7 +425,12 @@ if do_scan:
                 })
 
             out = pd.DataFrame(rows).sort_values(["Verdict", "Score", "Total Prem ($)"], ascending=[True, False, False])
-            # Rank by score within BUY CALLS / BUY PUTS first
+
+            # Optional VWAP confirmation (live only)
+            if tech_confirm and not out.empty:
+                out = apply_vwap_confirmation(out)
+
+            # Rank within verdicts
             calls_df = out[out["Verdict"] == "BUY CALLS"].sort_values("Score", ascending=False).head(TOP_N)
             puts_df = out[out["Verdict"] == "BUY PUTS"].sort_values("Score", ascending=False).head(TOP_N)
             no_df = out[out["Verdict"] == "NO TRADE"].sort_values("Score", ascending=False).head(TOP_N)
@@ -457,9 +451,9 @@ if do_scan:
 
             st.markdown("---")
             st.header("🔙 Backtest Signals (Underlying Proxy)")
-            st.caption("Backtest evaluates whether the underlying moved favorably after signals within your take-profit/stop-loss or holding window. This is a proxy for options performance.")
+            st.caption("Backtest checks if the underlying moved enough to hit your TP/SL or within a fixed holding window. Proxy for options performance.")
 
-            # Build signal list (today only) for display & optional backtest range below
+            # Build signal list for display & optional backtest
             signal_rows = pd.concat([
                 calls_df.assign(_dir="CALLS"),
                 puts_df.assign(_dir="PUTS"),
@@ -468,7 +462,6 @@ if do_scan:
 
             do_backtest = st.button("🏁 Run Backtest on Range", use_container_width=True)
             if do_backtest:
-                # Backtest over bt_start..bt_end using daily signals recomputed for each day.
                 res = run_backtest_range(
                     api_key=api_key if mode == "Unusual Whales API" else None,
                     start_date=pd.to_datetime(bt_start).date(),
@@ -481,16 +474,12 @@ if do_scan:
 
 
 # =========================
-# ----- Backtest Engine ----
+# ---- Backtest Engine ------
 # =========================
 
 @st.cache_data(show_spinner=True)
 def daily_signals_for(date_obj, api_key: Optional[str]) -> pd.DataFrame:
-    """Recompute signals for a historical date using entire regular-session window.
-    For simplicity, we approximate by using that day's 09:30–15:30 ET flow window.
-    (Adjust to your liking.)
-    """
-    # Convert date to 13:30–21:00 UTC (US market) — approximate
+    """Historical daily signals by scanning 09:30–15:30 ET (approx 13:30–21:00 UTC)."""
     start = datetime.combine(pd.to_datetime(date_obj).to_pydatetime(), datetime.min.time()).replace(hour=13, minute=30, tzinfo=timezone.utc)
     end = start.replace(hour=21, minute=0)
 
@@ -507,32 +496,28 @@ def daily_signals_for(date_obj, api_key: Optional[str]) -> pd.DataFrame:
     rows = []
     for a in aggs:
         score = smart_money_score(a, prem_median)
-        verdict, sc, sp = verdict_from_agg(a)
+        verdict, _, _ = verdict_from_agg(a)
         if verdict in ("BUY CALLS", "BUY PUTS"):
-            rows.append({"Ticker": a.ticker, "Verdict": verdict, "Score": round(score,1)})
+            rows.append({"Ticker": a.ticker, "Verdict": verdict, "Score": round(score, 1)})
 
     out = pd.DataFrame(rows).sort_values("Score", ascending=False)
     return out.head(TOP_N)
 
 
 def simulate_trade(ticker: str, verdict: str, signal_date: datetime, take_profit: float, stop_loss: float, hold_days: int) -> dict:
-    """Simulate trade on underlying: entry=close at signal_date, exit by TP/SL or max hold.
-    Returns dict with outcome metrics.
-    """
+    """Simulate trade on underlying: entry=close at signal_date (or next session), exit on TP/SL or max hold."""
     try:
         hist = yf.download(ticker, start=signal_date - timedelta(days=3), end=signal_date + timedelta(days=hold_days+7), progress=False)
     except Exception:
         hist = pd.DataFrame()
 
-    if hist.empty or ticker not in yf.Tickers(ticker).tickers:
+    if hist.empty:
         return {"ticker": ticker, "ok": False, "reason": "No price data"}
 
-    # Align to dates
     df = hist.copy()
     df.index = pd.to_datetime(df.index).date
 
     if signal_date.date() not in df.index:
-        # Entry = next trading day close
         trade_dates = sorted(df.index)
         future = [d for d in trade_dates if d >= signal_date.date()]
         if not future:
@@ -543,12 +528,10 @@ def simulate_trade(ticker: str, verdict: str, signal_date: datetime, take_profit
 
     entry_price = float(df.loc[entry_day, "Close"])
 
-    # Iterate forward until TP/SL/hold_days reached
     trade_dates = sorted([d for d in df.index if d >= entry_day])
     exit_day = trade_dates[min(hold_days-1, len(trade_dates)-1)]
     exit_price = float(df.loc[exit_day, "Close"])
 
-    # Track intraday extremes for earlier exits
     for d in trade_dates:
         high = float(df.loc[d, "High"]) if "High" in df.columns else float(df.loc[d, "Close"]) 
         low = float(df.loc[d, "Low"]) if "Low" in df.columns else float(df.loc[d, "Close"]) 
@@ -557,13 +540,13 @@ def simulate_trade(ticker: str, verdict: str, signal_date: datetime, take_profit
         if verdict == "BUY CALLS" and change_up >= take_profit:
             exit_day, exit_price = d, entry_price * (1 + take_profit/100)
             break
-        if verdict == "BUY PUTS" and (-change_dn) >= take_profit:  # price down equals profit for puts
+        if verdict == "BUY PUTS" and (-change_dn) >= take_profit:
             exit_day, exit_price = d, entry_price * (1 - take_profit/100)
             break
         if verdict == "BUY CALLS" and change_dn <= -stop_loss:
             exit_day, exit_price = d, entry_price * (1 - stop_loss/100)
             break
-        if verdict == "BUY PUTS" and (-change_up) <= -stop_loss:  # price up equals loss for puts
+        if verdict == "BUY PUTS" and (-change_up) <= -stop_loss:
             exit_day, exit_price = d, entry_price * (1 + stop_loss/100)
             break
 
@@ -626,28 +609,24 @@ def render_backtest(bt: pd.DataFrame):
 
     st.metric("Expectancy per trade", f"{expectancy:.2f}%")
 
-    # Per-ticker summary
     st.markdown("#### Per-Ticker Performance")
     per_tk = bt.groupby("ticker")["return_%"].agg(["count", "mean", "median"]).sort_values("mean", ascending=False)
     st.dataframe(per_tk)
 
 
 # =========================
-# --- Footer / Guidance ----
+# ---- Footer ---------------
 # =========================
-with st.expander("ℹ️ Setup tips & troubleshooting"):
+with st.expander("ℹ️ Setup tips & notes"):
     st.markdown(
         """
-        **API wiring:** Replace the placeholder URL in `fetch_uw_flows_api()` with your actual Unusual Whales endpoint.
-        If you hit auth or schema errors, upload a CSV export temporarily and verify the pipeline.
+        **API wiring:** Replace the placeholder URL in `fetch_uw_flows_api()` with your Unusual Whales endpoint and field names.
+        If API auth/schema gives trouble, upload a UW CSV export to validate the pipeline.
 
-        **Secrets:** Add your key in Streamlit Cloud under *App → Settings → Secrets* as `UW_API_KEY`.
+        **Secrets:** On Streamlit Cloud → *App → Settings → Secrets* add `UW_API_KEY`.
 
-        **Why underlying proxy for backtest?** Option-level historical bid/ask is expensive and plan-specific.
-        Using the underlying with TP/SL approximates directional edge honestly. If you prefer, extend `simulate_trade`
-        to fetch option chains and track a specific strike/expiry.
+        **Backtester:** Uses the underlying move as a proxy for option P/L with TP/SL and a max holding window. For full option-level PnL, extend `simulate_trade` to pull a specific chain/strike/expiry.
 
-        **Strict filters:** Tune \"Min total premium\", \"Min prints\", \"Min aggression\" to tighten noise. Keep expiries
-        near-term (1–6 weeks) as specified in UOA 2.0.
+        **Strict preset:** Higher premium, more prints, higher aggression, tighter expiries. Combine with VWAP confirmation for fewer but cleaner signals.
         """
     )
