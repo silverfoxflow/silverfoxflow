@@ -1,5 +1,5 @@
 # ==============================
-# SilverFoxFlow — Market UOA Scanner (UW fixed aggregation + safe metrics)
+# SilverFoxFlow — Market UOA Scanner (UW-native fields, kid-simple decisions)
 # ==============================
 import time
 from datetime import datetime, timedelta
@@ -40,33 +40,19 @@ with right:
     window_min = st.select_slider("Lookback window (minutes)", options=[15,30,45,60,90,120,180], value=60)
     auto = st.toggle("Auto-refresh every 60s", value=False)
 
-# Profile thresholds (now used on AGGREGATED totals)
+# Profile thresholds (on aggregated totals per ticker)
 PROFILE = {
-    "Strict":   dict(MIN_TOTAL_PREM=5_000_000, MIN_PRINTS=8,  DOMINANCE=1.3),
-    "Balanced": dict(MIN_TOTAL_PREM=3_000_000, MIN_PRINTS=6,  DOMINANCE=1.3),
-    "Explorer": dict(MIN_TOTAL_PREM=1_500_000, MIN_PRINTS=4,  DOMINANCE=1.2),
+    "Strict":   dict(MIN_TOTAL_PREM=4_000_000, MIN_PRINTS=5, DOM=1.35),
+    "Balanced": dict(MIN_TOTAL_PREM=2_000_000, MIN_PRINTS=4, DOM=1.25),
+    "Explorer": dict(MIN_TOTAL_PREM=800_000,   MIN_PRINTS=3, DOM=1.15),
 }[mode]
 
-# ---------- Demo fallback ----------
-def _demo_flow(n: int = 300, max_window: int = 120) -> pd.DataFrame:
-    rng = np.random.default_rng(42)
-    now = datetime.utcnow()
-    tickers = ["AAPL","MSFT","NVDA","META","TSLA","AMZN","AMD","NFLX","MRVL","CAT","MCD","DDOG","SMCI","AVGO"]
-    ts = [now - timedelta(minutes=int(rng.integers(0, max_window))) for _ in range(n)]
-    df = pd.DataFrame({
-        "timestamp": [t.isoformat() for t in ts],
-        "ticker": rng.choice(tickers, size=n),
-        "expiry_weeks": rng.integers(1, 16, size=n),
-        "notional": rng.choice([4e5, 8e5, 1.2e6, 2.5e6, 4e6, 6e6, 8e6], size=n),
-        "prints": rng.integers(1, 6, size=n),
-        "aggr_ratio": np.round(rng.uniform(0.3, 0.8, size=n), 2),
-        "volume": rng.integers(500, 30000, size=n),
-        "open_interest": rng.integers(300, 25000, size=n),
-    })
-    return df
-
-# ---------- UW fetch + diagnostics ----------
-def _map_rows(data):
+# ---------- UW fetch (multi-auth) ----------
+def _map_rows_uw(data):
+    """
+    Map UW 'flow-alerts' style rows to consistent columns we use downstream.
+    We rely on: total_premium, total_ask_side_prem, total_bid_side_prem, nprints, ticker/underlying.
+    """
     def first(d, *keys):
         for k in keys:
             if k in d and d[k] is not None:
@@ -76,23 +62,24 @@ def _map_rows(data):
     rows = []
     for x in data:
         rows.append({
-            "timestamp": first(x, "timestamp","ts","time","created_at"),
-            "ticker": first(x, "ticker","symbol","underlying","underlying_symbol"),
-            "expiry_weeks": first(x, "expiry_weeks","weeks_to_expiry","w","weeks"),
-            "notional": first(x, "premium","prem","notional","usd_value","dollar_value","amount"),
-            "prints": first(x, "prints","nprints","count","num_trades","sweeps","blocks", "sweep_count"),
-            "aggr_ratio": first(x, "aggr_ratio","aggressor_ratio","ask_hit_ratio","at_ask_ratio","sentiment"),
-            "volume": first(x, "volume","contracts","contracts_traded"),
-            "open_interest": first(x, "open_interest","open_int","oi"),
+            "timestamp": first(x, "timestamp","ts","time","created_at","start_time"),
+            "ticker": first(x, "ticker","symbol","underlying_symbol","median_ticker","underlying"),
+            "total_premium": first(x, "total_premium","sum_premium","total_prem"),
+            "ask_prem": first(x, "total_ask_side_prem","ask_prem","ask_side_prem"),
+            "bid_prem": first(x, "total_bid_side_prem","bid_prem","bid_side_prem"),
+            "prints": first(x, "nprints","prints","count","sweep_count"),
+            # Optional/useful extras:
+            "has_sweep": first(x, "has_sweep","has_sweeps"),
+            "volume_oi_ratio": first(x, "volume_oi_ratio","vol_oi_ratio"),
         })
     df = pd.DataFrame(rows)
     if not df.empty:
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-        for c in ["expiry_weeks","notional","prints","aggr_ratio","volume","open_interest"]:
+        for c in ["total_premium","ask_prem","bid_prem","prints","volume_oi_ratio"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
-        # If 'sentiment' came in (0..1 bullishness), cap to [0,1]
-        if df["aggr_ratio"].notna().any():
-            df["aggr_ratio"] = df["aggr_ratio"].clip(lower=0, upper=1)
+        # Fill NaNs for dollars/prints to zero so aggregation works cleanly
+        for c in ["total_premium","ask_prem","bid_prem","prints"]:
+            df[c] = df[c].fillna(0.0)
     return df
 
 def fetch_uw_flow(api_base: str, endpoint: str, api_key: str, minutes: int):
@@ -115,11 +102,11 @@ def fetch_uw_flow(api_base: str, endpoint: str, api_key: str, minutes: int):
             q = {**params, **extra_q}
             r = requests.get(url, headers=headers, params=q, timeout=30)
             if r.status_code != 200:
-                errors.append(f"{r.status_code} with headers {list(headers.keys())} & params {list(q.keys())}")
+                errors.append(f"{r.status_code} {list(headers.keys())} {list(q.keys())}")
                 continue
             payload = r.json()
             data = payload.get("data", payload) if isinstance(payload, dict) else payload
-            df = _map_rows(data)
+            df = _map_rows_uw(data)
             dbg = {
                 "used_url": url, "status_code": r.status_code,
                 "auth_headers_used": list(headers.keys()),
@@ -135,17 +122,18 @@ def fetch_uw_flow(api_base: str, endpoint: str, api_key: str, minutes: int):
 
     raise RuntimeError("UW fetch failed. Tried:\n- " + "\n- ".join(errors))
 
-# ---------- Decision on aggregated group ----------
-def decide_group(g: pd.DataFrame) -> str:
-    # dollars toward calls vs puts using aggressor ratio
-    bull = float((g["notional"] * g["aggr_ratio"]).sum())
-    bear = float((g["notional"] * (1 - g["aggr_ratio"])).sum())
-    if bear == 0 and bull == 0:
+# ---------- Kid-simple decision on aggregated ticker ----------
+def decide_group(sum_ask: float, sum_bid: float, dom_req: float) -> str:
+    # dom = bigger_side / smaller_side
+    bull = float(sum_ask or 0.0)   # paying the ask → generally call-buying pressure
+    bear = float(sum_bid or 0.0)   # hitting the bid → generally put-buying or selling calls
+    if bull == 0 and bear == 0:
         return "NO TRADE"
-    dom = (bull / max(bear, 1e-9)) if bear > 0 else float("inf")
-    if dom >= PROFILE["DOMINANCE"]:
+    bigger = max(bull, bear); smaller = max(min(bull, bear), 1e-9)
+    dom = bigger / smaller
+    if bull > bear and dom >= dom_req:  # strong net ask-side dollars
         return "BUY CALLS"
-    if (1.0/dom) >= PROFILE["DOMINANCE"]:
+    if bear > bull and dom >= dom_req:  # strong net bid-side dollars
         return "BUY PUTS"
     return "NO TRADE"
 
@@ -160,11 +148,11 @@ if run_scan:
             df, dbg = fetch_uw_flow(API_BASE, UW_ENDPOINT, API_KEY, window_min)
             st.sidebar.info({"uw_debug": dbg})
         else:
-            df = _demo_flow(max_window=window_min)
-            st.sidebar.info({"uw_debug": "demo"})
+            df = pd.DataFrame()  # no demo here to avoid confusion
+            st.sidebar.info({"uw_debug": "demo (disabled)"})
     except Exception as e:
         st.error(f"Data fetch failed: {e}")
-        df = _demo_flow(max_window=window_min)
+        df = pd.DataFrame()
 
     st.session_state["flow"] = df
     st.session_state["scan_ts"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -180,56 +168,52 @@ if "flow" in st.session_state:
         st.write(f"Rows: {len(df)}")
         if not df.empty:
             st.write("Columns:", list(df.columns))
-            st.write("Null counts:", df.isna().sum().to_dict())
             st.dataframe(df.head(10), use_container_width=True)
 
     if df.empty:
-        st.warning("No rows returned. Increase lookback to 120–180 minutes or confirm your plan includes flow alerts.")
+        st.warning("No rows returned. Try increasing the lookback to 120–180 minutes.")
     else:
-        # --------- aggregate per ticker ---------
-        grp = df.groupby("ticker", dropna=True)
+        # --- aggregate per ticker with UW-native dollars ---
+        agg = (df.groupby("ticker", dropna=True)
+                 .agg(total_premium=("total_premium","sum"),
+                      ask_dollars=("ask_prem","sum"),
+                      bid_dollars=("bid_prem","sum"),
+                      prints_total=("prints","sum"),
+                      alerts=("ticker","count"))
+                 .reset_index())
 
-        agg = grp.agg(
-            total_premium = ("notional","sum"),
-            prints_total  = ("prints","sum"),
-            avg_aggr      = ("aggr_ratio","mean")
-        ).reset_index()
-
-        # eligibility on aggregated totals
-        elig = agg[
+        # eligibility on aggregated numbers
+        eligible = agg[
             (agg["total_premium"] >= PROFILE["MIN_TOTAL_PREM"]) &
             (agg["prints_total"]  >= PROFILE["MIN_PRINTS"])
-        ]
+        ].copy()
+
+        # compute decision
+        eligible["decision"] = eligible.apply(
+            lambda r: decide_group(r["ask_dollars"], r["bid_dollars"], PROFILE["DOM"]),
+            axis=1
+        )
 
         st.subheader("Top Picks")
-        if elig.empty:
-            st.info("Data returned, but nothing met the **aggregated** thresholds yet. Try **Explorer** profile or widen lookback.")
+        if eligible.empty:
+            st.info("Data returned, but nothing met the **aggregated** thresholds yet. Switch to **Explorer** or widen lookback.")
         else:
-            # Rank by total premium
-            elig_sorted = elig.sort_values("total_premium", ascending=False)
-            top_ticks = elig_sorted["ticker"].head(10).tolist()
-
-            cols = st.columns(min(5, len(top_ticks)))
-            for i, tkr in enumerate(top_ticks):
-                g = df[df["ticker"] == tkr]
-                decision = decide_group(g)
+            top = (eligible.sort_values(["decision","total_premium"],
+                                        ascending=[True, False])
+                          .sort_values("total_premium", ascending=False)
+                          .head(10))
+            cols = st.columns(min(5, len(top)))
+            for i, (_, r) in enumerate(top.iterrows()):
+                helper = f"${r['total_premium']:,.0f} total • ask ${r['ask_dollars']:,.0f} vs bid ${r['bid_dollars']:,.0f} • prints {int(r['prints_total'])}"
                 with cols[i % len(cols)]:
-                    st.metric(tkr, decision, help=f"${elig_sorted.loc[elig_sorted['ticker']==tkr, 'total_premium'].iloc[0]:,.0f} total")
+                    st.metric(r["ticker"], r["decision"], help=helper)
 
         st.divider()
-        # --------- safe metrics ---------
-        st.metric("Eligible tickers", int(len(elig)))
-        st.metric("Unique tickers (raw)", int(df["ticker"].nunique()))
-
-        if not elig.empty:
-            # compute decisions only for eligible tickers (avoids Series conversion errors)
-            dec_series = pd.Series(
-                {t: decide_group(df[df["ticker"] == t]) for t in elig["ticker"]}
-            )
-            st.metric("BUY CALLS", int((dec_series == "BUY CALLS").sum()))
-            st.metric("BUY PUTS",  int((dec_series == "BUY PUTS").sum()))
-        else:
-            st.metric("BUY CALLS", 0)
-            st.metric("BUY PUTS", 0)
+        # summary counters (safe)
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Eligible tickers", int(len(eligible)))
+        c2.metric("Unique tickers (raw)", int(df["ticker"].nunique()))
+        c3.metric("BUY CALLS", int((eligible["decision"] == "BUY CALLS").sum()))
+        c4.metric("BUY PUTS",  int((eligible["decision"] == "BUY PUTS").sum()))
 else:
     st.info("Click **Scan Market** to fetch institutional flow and generate signals.")
