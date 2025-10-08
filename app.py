@@ -1,5 +1,5 @@
 # ==============================
-# SilverFoxFlow — Market UOA Scanner (UW multi-auth + deep debug)
+# SilverFoxFlow — Market UOA Scanner (UW fixed aggregation + safe metrics)
 # ==============================
 import time
 from datetime import datetime, timedelta
@@ -40,8 +40,15 @@ with right:
     window_min = st.select_slider("Lookback window (minutes)", options=[15,30,45,60,90,120,180], value=60)
     auto = st.toggle("Auto-refresh every 60s", value=False)
 
+# Profile thresholds (now used on AGGREGATED totals)
+PROFILE = {
+    "Strict":   dict(MIN_TOTAL_PREM=5_000_000, MIN_PRINTS=8,  DOMINANCE=1.3),
+    "Balanced": dict(MIN_TOTAL_PREM=3_000_000, MIN_PRINTS=6,  DOMINANCE=1.3),
+    "Explorer": dict(MIN_TOTAL_PREM=1_500_000, MIN_PRINTS=4,  DOMINANCE=1.2),
+}[mode]
+
 # ---------- Demo fallback ----------
-def _demo_flow(n: int = 200, max_window: int = 120) -> pd.DataFrame:
+def _demo_flow(n: int = 300, max_window: int = 120) -> pd.DataFrame:
     rng = np.random.default_rng(42)
     now = datetime.utcnow()
     tickers = ["AAPL","MSFT","NVDA","META","TSLA","AMZN","AMD","NFLX","MRVL","CAT","MCD","DDOG","SMCI","AVGO"]
@@ -50,11 +57,11 @@ def _demo_flow(n: int = 200, max_window: int = 120) -> pd.DataFrame:
         "timestamp": [t.isoformat() for t in ts],
         "ticker": rng.choice(tickers, size=n),
         "expiry_weeks": rng.integers(1, 16, size=n),
-        "notional": rng.choice([1.2e6, 2.5e6, 4e6, 6e6, 8e6, 12e6], size=n),
-        "prints": rng.integers(3, 20, size=n),
+        "notional": rng.choice([4e5, 8e5, 1.2e6, 2.5e6, 4e6, 6e6, 8e6], size=n),
+        "prints": rng.integers(1, 6, size=n),
         "aggr_ratio": np.round(rng.uniform(0.3, 0.8, size=n), 2),
-        "volume": rng.integers(1000, 30000, size=n),
-        "open_interest": rng.integers(800, 25000, size=n),
+        "volume": rng.integers(500, 30000, size=n),
+        "open_interest": rng.integers(300, 25000, size=n),
     })
     return df
 
@@ -72,9 +79,9 @@ def _map_rows(data):
             "timestamp": first(x, "timestamp","ts","time","created_at"),
             "ticker": first(x, "ticker","symbol","underlying","underlying_symbol"),
             "expiry_weeks": first(x, "expiry_weeks","weeks_to_expiry","w","weeks"),
-            "notional": first(x, "premium","prem","notional","usd_value","dollar_value"),
-            "prints": first(x, "prints","nprints","count","num_trades","sweeps","blocks"),
-            "aggr_ratio": first(x, "aggr_ratio","aggressor_ratio","ask_hit_ratio","at_ask_ratio"),
+            "notional": first(x, "premium","prem","notional","usd_value","dollar_value","amount"),
+            "prints": first(x, "prints","nprints","count","num_trades","sweeps","blocks", "sweep_count"),
+            "aggr_ratio": first(x, "aggr_ratio","aggressor_ratio","ask_hit_ratio","at_ask_ratio","sentiment"),
             "volume": first(x, "volume","contracts","contracts_traded"),
             "open_interest": first(x, "open_interest","open_int","oi"),
         })
@@ -83,26 +90,22 @@ def _map_rows(data):
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
         for c in ["expiry_weeks","notional","prints","aggr_ratio","volume","open_interest"]:
             df[c] = pd.to_numeric(df[c], errors="coerce")
+        # If 'sentiment' came in (0..1 bullishness), cap to [0,1]
+        if df["aggr_ratio"].notna().any():
+            df["aggr_ratio"] = df["aggr_ratio"].clip(lower=0, upper=1)
     return df
 
 def fetch_uw_flow(api_base: str, endpoint: str, api_key: str, minutes: int):
-    """
-    Try multiple auth styles + show deep diagnostics.
-    Returns (df, debug_dict)
-    """
     base = api_base.rstrip("/")
     url = f"{base}{endpoint if endpoint.startswith('/') else '/' + endpoint}"
 
-    # Try multiple header styles then query-param token as last resort
     attempts = [
-        ({"Authorization": f"Bearer {api_key}"}, {}),             # Bearer
-        ({"Authorization": f"Token {api_key}"}, {}),              # Token
-        ({"X-API-KEY": api_key}, {}),                             # X-API-KEY (titlecase)
-        ({"x-api-key": api_key}, {}),                             # x-api-key (lower)
-        ({}, {"token": api_key}),                                 # token in query
+        ({"Authorization": f"Bearer {api_key}"}, {}),
+        ({"Authorization": f"Token {api_key}"}, {}),
+        ({"X-API-KEY": api_key}, {}),
+        ({"x-api-key": api_key}, {}),
+        ({}, {"token": api_key}),
     ]
-
-    # Try both 'minutes' and 'window_min' (and the custom minutes_param from secrets)
     param_keys = [UW_MIN_PARAM] + [p for p in ["minutes","window_min"] if p != UW_MIN_PARAM]
     params = {k: minutes for k in param_keys}
 
@@ -111,21 +114,18 @@ def fetch_uw_flow(api_base: str, endpoint: str, api_key: str, minutes: int):
         try:
             q = {**params, **extra_q}
             r = requests.get(url, headers=headers, params=q, timeout=30)
-            code = r.status_code
-            # accept 200; anything else collect and keep trying
-            if code != 200:
-                errors.append(f"{code} with headers {list(headers.keys())} & params {list(q.keys())}")
+            if r.status_code != 200:
+                errors.append(f"{r.status_code} with headers {list(headers.keys())} & params {list(q.keys())}")
                 continue
             payload = r.json()
             data = payload.get("data", payload) if isinstance(payload, dict) else payload
             df = _map_rows(data)
             dbg = {
-                "used_url": url,
-                "status_code": code,
+                "used_url": url, "status_code": r.status_code,
                 "auth_headers_used": list(headers.keys()),
                 "params_used": list(q.keys()),
                 "raw_count": (len(data) if isinstance(data, list) else (len(data) if hasattr(data, "__len__") else "n/a")),
-                "first_row_keys": (list(data[0].keys()) if isinstance(data, list) and data else []),
+                "first_row_keys": (list(data[0].keys()) if isinstance(data, list) and data else [])
             }
             st.session_state["uw_endpoint_used"] = url
             return df, dbg
@@ -133,15 +133,20 @@ def fetch_uw_flow(api_base: str, endpoint: str, api_key: str, minutes: int):
             errors.append(str(e))
             continue
 
-    raise RuntimeError("UW fetch failed. Tried auth/param combos:\n- " + "\n- ".join(errors))
+    raise RuntimeError("UW fetch failed. Tried:\n- " + "\n- ".join(errors))
 
-# ---------- Simple decision rule ----------
-def decide(g: pd.DataFrame) -> str:
-    if g.empty: return "NO TRADE"
-    bull = (g["notional"] * g["aggr_ratio"]).sum()
-    bear = (g["notional"] * (1 - g["aggr_ratio"])).sum()
-    if bull > bear * 1.3: return "BUY CALLS"
-    if bear > bull * 1.3: return "BUY PUTS"
+# ---------- Decision on aggregated group ----------
+def decide_group(g: pd.DataFrame) -> str:
+    # dollars toward calls vs puts using aggressor ratio
+    bull = float((g["notional"] * g["aggr_ratio"]).sum())
+    bear = float((g["notional"] * (1 - g["aggr_ratio"])).sum())
+    if bear == 0 and bull == 0:
+        return "NO TRADE"
+    dom = (bull / max(bear, 1e-9)) if bear > 0 else float("inf")
+    if dom >= PROFILE["DOMINANCE"]:
+        return "BUY CALLS"
+    if (1.0/dom) >= PROFILE["DOMINANCE"]:
+        return "BUY PUTS"
     return "NO TRADE"
 
 # ---------- Scan ----------
@@ -171,7 +176,6 @@ if "flow" in st.session_state:
     if "uw_endpoint_used" in st.session_state:
         st.caption(f"UW endpoint: {st.session_state['uw_endpoint_used']}")
 
-    # fast diagnostics
     with st.expander("Debug: fetched rows / columns", expanded=False):
         st.write(f"Rows: {len(df)}")
         if not df.empty:
@@ -180,28 +184,52 @@ if "flow" in st.session_state:
             st.dataframe(df.head(10), use_container_width=True)
 
     if df.empty:
-        st.warning("No rows returned. Try increasing the lookback to 120–180 minutes or verify the endpoint/plan includes flow alerts.")
+        st.warning("No rows returned. Increase lookback to 120–180 minutes or confirm your plan includes flow alerts.")
     else:
-        # very light eligibility (keep it simple for now)
-        filtered = df[df["notional"] >= (3_000_000 if mode=="Strict" else 2_000_000 if mode=="Balanced" else 1_000_000)]
+        # --------- aggregate per ticker ---------
+        grp = df.groupby("ticker", dropna=True)
+
+        agg = grp.agg(
+            total_premium = ("notional","sum"),
+            prints_total  = ("prints","sum"),
+            avg_aggr      = ("aggr_ratio","mean")
+        ).reset_index()
+
+        # eligibility on aggregated totals
+        elig = agg[
+            (agg["total_premium"] >= PROFILE["MIN_TOTAL_PREM"]) &
+            (agg["prints_total"]  >= PROFILE["MIN_PRINTS"])
+        ]
+
         st.subheader("Top Picks")
-        if filtered.empty:
-            st.info("Data returned but nothing met the minimum notional. Lower the profile (Explorer) or widen lookback.")
+        if elig.empty:
+            st.info("Data returned, but nothing met the **aggregated** thresholds yet. Try **Explorer** profile or widen lookback.")
         else:
-            # Rank by total notional per ticker
-            agg = filtered.groupby("ticker").agg(total_notional=("notional","sum")).reset_index()
-            top = agg.sort_values("total_notional", ascending=False).head(10)["ticker"].tolist()
-            cols = st.columns(min(5, len(top)))
-            for i, tkr in enumerate(top):
-                g = filtered[filtered["ticker"] == tkr]
-                decision = decide(g)
+            # Rank by total premium
+            elig_sorted = elig.sort_values("total_premium", ascending=False)
+            top_ticks = elig_sorted["ticker"].head(10).tolist()
+
+            cols = st.columns(min(5, len(top_ticks)))
+            for i, tkr in enumerate(top_ticks):
+                g = df[df["ticker"] == tkr]
+                decision = decide_group(g)
                 with cols[i % len(cols)]:
-                    st.metric(tkr, decision)
+                    st.metric(tkr, decision, help=f"${elig_sorted.loc[elig_sorted['ticker']==tkr, 'total_premium'].iloc[0]:,.0f} total")
 
         st.divider()
-        st.metric("Eligible prints", f"{len(filtered):,}")
-        st.metric("Unique tickers", f"{filtered['ticker'].nunique():,}")
-        st.metric("BUY CALLS", int((filtered.groupby('ticker').apply(decide) == "BUY CALLS").sum()))
-        st.metric("BUY PUTS", int((filtered.groupby('ticker').apply(decide) == "BUY PUTS").sum()))
+        # --------- safe metrics ---------
+        st.metric("Eligible tickers", int(len(elig)))
+        st.metric("Unique tickers (raw)", int(df["ticker"].nunique()))
+
+        if not elig.empty:
+            # compute decisions only for eligible tickers (avoids Series conversion errors)
+            dec_series = pd.Series(
+                {t: decide_group(df[df["ticker"] == t]) for t in elig["ticker"]}
+            )
+            st.metric("BUY CALLS", int((dec_series == "BUY CALLS").sum()))
+            st.metric("BUY PUTS",  int((dec_series == "BUY PUTS").sum()))
+        else:
+            st.metric("BUY CALLS", 0)
+            st.metric("BUY PUTS", 0)
 else:
     st.info("Click **Scan Market** to fetch institutional flow and generate signals.")
