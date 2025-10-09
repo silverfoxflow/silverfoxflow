@@ -1,14 +1,12 @@
-# SilverFoxFlow — Final Build
-# Features: Confidence Coloring • High-Confidence Toggle • Market Hours Banner
-# Keeps: Live Unusual Whales flow-alerts, kid-simple layout, recommendations, toy backtest
-# ---------------------------------------------------------------------------------------
+# SilverFoxFlow — Clean Confidence (No HTML in Tables)
+# Final build: removes HTML chips from DataFrames; shows plain Verdict + numeric Confidence
+# Keeps: Live UW flow-alerts, high-confidence toggle, market-hours banner, recommendations, toy backtest
+# -----------------------------------------------------------------------------------------------
 # Requirements: pip install streamlit pandas requests yfinance pytz
 # Secrets/Env: UNUSUAL_WHALES_API_KEY (or UW_API_KEY in st.secrets)
 
 from __future__ import annotations
 import os
-import math
-import json
 import traceback
 from datetime import datetime, timedelta, timezone, date, time as dtime
 from typing import Dict, Any, List, Optional, Tuple
@@ -31,7 +29,7 @@ st.set_page_config(page_title="🦊 SilverFoxFlow — UOA 2.0", page_icon="🦊"
 st.markdown(
     """
     <style>
-      :root { --bg:#0f1117; --panel:#171a23; --muted:#9aa3b2; --text:#e7e9ef; --green:#22c55e; --red:#ef4444; --amber:#f59e0b; }
+      :root { --bg:#0f1117; --panel:#171a23; --muted:#9aa3b2; --text:#e7e9ef; }
       html, body, [class*="css"], .stApp { font-size: 16px; background: var(--bg); color: var(--text); }
       section[data-testid="stSidebar"] { background: var(--panel); border-right: 1px solid #202636; }
       .title { text-align:center; font-size: 32px; font-weight: 800; margin: 6px 0 2px; }
@@ -39,19 +37,11 @@ st.markdown(
       .market { text-align:center; font-size: 12px; margin-bottom: 10px; }
       .open { color:#86efac; }
       .closed { color:#fca5a5; }
-      .cta button { width: 280px; height: 56px; border-radius: 14px !important; font-weight: 800; font-size: 18px; box-shadow: 0 6px 18px rgba(255,99,99,.12); }
-      .cta button:hover { box-shadow: 0 8px 22px rgba(255,99,99,.18); }
-      .chip { display:inline-block; padding: 4px 10px; border-radius: 999px; font-weight: 700; font-size: 12px; border:1px solid #2a3245; }
-      .chip.green { background: rgba(34,197,94,.12); color: var(--green); border-color: rgba(34,197,94,.35); }
-      .chip.red { background: rgba(239,68,68,.12); color: var(--red); border-color: rgba(239,68,68,.35); }
-      .chip.gray { background: rgba(148,163,184,.14); color: #94a3b8; border-color: rgba(148,163,184,.35); }
       .badge { display:inline-block; padding:.25rem .6rem; border-radius:999px; font-weight:800; font-size:12px; }
       .b-strong { background:#103b28; color:#2cd199; }
       .b-mod { background:#3a2e12; color:#f7c257; }
       .b-weak { background:#3b1a1a; color:#ff8c8c; }
       .status { color: var(--muted); font-size: 12px; margin-top: 2px; text-align:center; }
-      .section-title { font-size: 18px; font-weight: 800; margin: 16px 0 8px; }
-      .small { color: var(--muted); font-size: 12px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -72,8 +62,7 @@ def is_market_open(now_utc: datetime) -> bool:
         now_et = now_utc.astimezone(tz)
         if now_et.weekday() >= 5:  # 5=Sat, 6=Sun
             return False
-        open_t = dtime(9, 30)
-        close_t = dtime(16, 0)
+        open_t, close_t = dtime(9, 30), dtime(16, 0)
         return open_t <= now_et.time() <= close_t
     except Exception:
         return False
@@ -117,6 +106,7 @@ def _safe_float(x, default=0.0) -> float:
     except Exception:
         return float(default)
 
+
 def _dte_days(expiry_iso: Optional[str]) -> Optional[int]:
     if not expiry_iso:
         return None
@@ -125,12 +115,14 @@ def _dte_days(expiry_iso: Optional[str]) -> Optional[int]:
     except Exception:
         return None
 
-def math_tanh(x: float) -> float:
+
+def _tanh(x: float) -> float:
+    import math
     try:
-        import math
         return math.tanh(x)
     except Exception:
         return 0.0
+
 
 def score_alert(a: Dict[str, Any]) -> Tuple[float, str, Dict[str, Any]]:
     total_prem = _safe_float(a.get("total_premium", a.get("premium")))
@@ -143,25 +135,20 @@ def score_alert(a: Dict[str, Any]) -> Tuple[float, str, Dict[str, Any]]:
     net_ask_bias = ask_prem - bid_prem
     side = "CALL" if option_type == "call" or net_ask_bias >= 0 else "PUT"
 
-    prem_term = math_tanh(total_prem / 250_000.0)
-    ask_term = math_tanh(max(0.0, net_ask_bias) / (total_prem + 1e-9))
-    if dte is None:
-        dte_term = 0.5
-    elif 7 <= dte <= 35:
-        dte_term = 1.0
-    elif 1 <= dte < 7:
-        dte_term = 0.6
-    elif 36 <= dte <= 90:
-        dte_term = 0.7
-    else:
-        dte_term = 0.4
+    prem_term = _tanh(total_prem / 250_000.0)
+    ask_term = _tanh(max(0.0, net_ask_bias) / (total_prem + 1e-9))
+    if dte is None: dte_term = 0.5
+    elif 7 <= dte <= 35: dte_term = 1.0
+    elif 1 <= dte < 7: dte_term = 0.6
+    elif 36 <= dte <= 90: dte_term = 0.7
+    else: dte_term = 0.4
 
     open_only = 1.0 if a.get("all_opening", False) else 0.0
     sweepish = 1.0 if any(t in (a.get("tags") or []) for t in ["sweep", "intermarket_sweep", "i_sweep"]) else 0.0
 
-    score = 0.40 * prem_term + 0.30 * ask_term + 0.20 * dte_term + 0.05 * open_only + 0.05 * sweepish
+    score = 0.40*prem_term + 0.30*ask_term + 0.20*dte_term + 0.05*open_only + 0.05*sweepish
     out = {"total_premium": total_prem, "ask_bias": net_ask_bias, "dte": dte, "all_opening": bool(a.get("all_opening", False))}
-    return round(100 * score, 1), side, out
+    return round(100*score, 1), side, out
 
 # =========================
 # ---- Ranking ---------------
@@ -188,14 +175,12 @@ def rank_alerts(alerts: List[Dict[str, Any]],
             continue
         if max_weeks_to_expiry and expiry:
             dte = _dte_days(expiry)
-            if dte is not None and dte > max_weeks_to_expiry * 7:
+            if dte is not None and dte > max_weeks_to_expiry*7:
                 continue
 
         score, side, extras = score_alert(a)
-        if prefer_opening and not extras.get("all_opening"):
-            score *= 0.95
-        if prefer_ask_bias and extras.get("ask_bias", 0) <= 0:
-            score *= 0.95
+        if prefer_opening and not extras.get("all_opening"): score *= 0.95
+        if prefer_ask_bias and extras.get("ask_bias", 0) <= 0: score *= 0.95
 
         rows.append({
             "Ticker": ticker,
@@ -253,11 +238,15 @@ st.markdown('<div class="title">🦊 SilverFoxFlow — UOA 2.0</div>', unsafe_al
 st.markdown('<div class="sub">Tap SCAN to pull live flow from Unusual Whales. Green = calls, Red = puts, Gray = skip.</div>', unsafe_allow_html=True)
 
 now_utc = datetime.now(timezone.utc)
-market_open = is_market_open(now_utc)
-if market_open:
-    st.markdown("<div class='market open'>Market Open — Live institutional flow should be active.</div>", unsafe_allow_html=True)
-else:
-    st.markdown("<div class='market closed'>⚠ Market Closed — Live hedge fund flow is limited; confidence may be lower off-hours.</div>", unsafe_allow_html=True)
+
+def is_market_open_banner():
+    open_flag = is_market_open(now_utc)
+    if open_flag:
+        st.markdown("<div class='market open'>Market Open — Live institutional flow should be active.</div>", unsafe_allow_html=True)
+    else:
+        st.markdown("<div class='market closed'>⚠ Market Closed — Live hedge fund flow is limited; confidence may be lower off-hours.</div>", unsafe_allow_html=True)
+
+is_market_open_banner()
 
 c1, c2, c3 = st.columns([1,2,1])
 with c2:
@@ -281,7 +270,7 @@ if scan_now:
                 status.markdown(f"<div class='status'>Fetched <b>{fetched}</b> raw alerts from Unusual Whales • window: {minutes_window}m • {datetime.utcnow().strftime('%H:%M:%S')} UTC</div>", unsafe_allow_html=True)
             except Exception as e:
                 st.error(f"Fetch error: {e}")
-                st.caption(traceback.format_exc())
+                st.caption(traceback.format_traceback())
 
         if alerts:
             ranked_df = rank_alerts(
@@ -294,14 +283,6 @@ if scan_now:
             )
 
 # ============ RESULTS TABLE ============
-
-def color_conf(v: float) -> str:
-    if v >= 80:
-        return f"<span class='chip green'>{v:.1f}</span>"
-    if v >= 70:
-        return f"<span class='chip' style='background:rgba(245,158,11,.14);color:#fbbf24;border-color:rgba(245,158,11,.35);'>{v:.1f}</span>"
-    return f"<span class='chip gray'>{v:.1f}</span>"
-
 if ranked_df is not None:
     st.markdown("### 🔎 Top candidates")
     top_score = ranked_df["Confidence"].max() if not ranked_df.empty else 0
@@ -313,13 +294,12 @@ if ranked_df is not None:
         st.markdown('<span class="badge b-weak">Signal quality: WEAK</span>', unsafe_allow_html=True)
 
     disp = ranked_df.copy()
-    # Optional high-confidence filter
     if high_conf_only:
         disp = disp[disp["Confidence"] >= 80]
 
-    # Verdict chips and confidence coloring
-    disp["Verdict"] = disp["VerdictSide"].apply(lambda s: f"<span class='chip {'green' if s=='CALL' else 'red'}'>{'BUY ' + s}</span>")
-    disp["Confidence (0–100)"] = disp["Confidence"].apply(color_conf)
+    # Plain verdict & numeric confidence
+    disp["Verdict"] = disp["VerdictSide"].apply(lambda s: f"BUY {s}")
+    disp["Confidence (0–100)"] = disp["Confidence"].round(1)
 
     order_cols = ["Ticker", "Verdict", "Confidence (0–100)", "Expiry", "Option", "Total Premium ($)", "Ask Prem ($)", "Bid Prem ($)", "Size", "Why"]
     for c in order_cols:
@@ -334,7 +314,7 @@ def nearest_friday_within_weeks(base: date, wmin: int, wmax: int) -> Optional[da
     cands = []
     for w in range(max(1, wmin), max(wmin, wmax) + 1):
         d = base + timedelta(days=7*w)
-        while d.weekday() != 4:  # 4=Friday
+        while d.weekday() != 4:  # Friday
             d += timedelta(days=1)
         cands.append(d)
     return min(cands) if cands else None
@@ -344,7 +324,6 @@ def suggest_contracts(df: pd.DataFrame, top_n: int, weeks_min: int, weeks_max: i
     if df is None or df.empty:
         return pd.DataFrame()
     ideas = []
-    # Apply the same high-confidence filter to recommendations
     base = df.copy()
     if high_conf_only:
         base = base[base["Confidence"] >= 80]
@@ -374,8 +353,10 @@ def suggest_contracts(df: pd.DataFrame, top_n: int, weeks_min: int, weeks_max: i
             tkr = yf.Ticker(tk)
             exps = tkr.options or []
             if exps:
+                # choose nearest to target_exp
+                from datetime import datetime as _dt
                 if target_exp:
-                    closest = min(exps, key=lambda x: abs((datetime.strptime(x, "%Y-%m-%d").date() - target_exp).days))
+                    closest = min(exps, key=lambda x: abs((_dt.strptime(x, "%Y-%m-%d").date() - target_exp).days))
                 else:
                     closest = exps[0]
                 chain = tkr.option_chain(closest)
@@ -412,9 +393,8 @@ if ranked_df is not None and not ranked_df.empty:
     if rec_df.empty:
         st.info("Not enough clean signals for recommendations. Loosen filters or widen the scan window.")
     else:
-        # Color confidence chips
         rec_show = rec_df.copy()
-        rec_show["Confidence (0–100)"] = rec_show["Confidence"].apply(color_conf)
+        rec_show["Confidence (0–100)"] = rec_show["Confidence"].round(1)
         order_cols = ["Ticker", "Side", "Confidence (0–100)", "Suggested Expiry", "Suggested Strike", "Plan", "Order"]
         st.dataframe(rec_show[order_cols], use_container_width=True, hide_index=True)
         all_txt = "\n".join(rec_df["Order"].tolist())
@@ -435,11 +415,9 @@ def naive_backtest(trades: pd.DataFrame, tp_pct: float, sl_pct: float) -> Dict[s
 
 if ranked_df is not None:
     st.markdown("### 🧪 Quick backtest (toy)")
-    # Use recommendations list if available; else fallback to top candidates
     base_df = None
     if 'rec_df' in locals() and rec_df is not None and not rec_df.empty:
-        tmp = rec_df.rename(columns={"Confidence":"Confidence"})
-        base_df = tmp
+        base_df = rec_df.rename(columns={"Confidence":"Confidence"})
     elif ranked_df is not None and not ranked_df.empty:
         base_df = ranked_df
 
