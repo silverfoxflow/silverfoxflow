@@ -1,437 +1,270 @@
-# SilverFoxFlow — Clean Confidence (No HTML in Tables)
-# Final build: removes HTML chips from DataFrames; shows plain Verdict + numeric Confidence
-# Keeps: Live UW flow-alerts, high-confidence toggle, market-hours banner, recommendations, toy backtest
-# -----------------------------------------------------------------------------------------------
-# Requirements: pip install streamlit pandas requests yfinance pytz
-# Secrets/Env: UNUSUAL_WHALES_API_KEY (or UW_API_KEY in st.secrets)
-
-from __future__ import annotations
-import os
-import traceback
-from datetime import datetime, timedelta, timezone, date, time as dtime
-from typing import Dict, Any, List, Optional, Tuple
-
-import pandas as pd
-import requests
 import streamlit as st
+import pandas as pd
 import yfinance as yf
+from datetime import datetime, timedelta
 
-try:
-    from zoneinfo import ZoneInfo  # py>=3.9
-except Exception:
-    ZoneInfo = None
+st.set_page_config(page_title="S&P MACD Scanner – Fresh", layout="wide")
 
-# =========================
-# ---- Page & Styles --------
-# =========================
-st.set_page_config(page_title="🦊 SilverFoxFlow — UOA 2.0", page_icon="🦊", layout="wide")
+# ===== 1) YOUR S&P LIST (from your paste) =====
+SP500_TICKERS = [
+    "NVDA","AAPL","MSFT","GOOG","GOOGL","AMZN","AVGO","META","TSLA","BRK.B",
+    "JPM","WMT","LLY","ORCL","V","MA","XOM","PLTR","NFLX","JNJ","AMD","COST",
+    "BAC","ABBV","HD","PG","GE","CVX","UNH","KO","CSCO","IBM","WFC","CAT",
+    "MS","MU","GS","AXP","CRM","RTX","TMUS","PM","APP","ABT","MRK","TMO",
+    "MCD","DIS","UBER","PEP","ANET","LRCX","LIN","QCOM","NOW","INTC","ISRG",
+    "INTU","AMAT","C","BX","BLK","T","SCHW","APH","NEE","VZ","BKNG","AMGN",
+    "KLAC","GEV","TJX","ACN","BA","DHR","BSX","PANW","GILD","ETN","SPGI",
+    "TXN","ADBE","PFE","COF","CRWD","SYK","LOW","UNP","HOOD","HON","DE",
+    "WELL","PGR","PLD","CEG","MDT","ADI","LMT","COP","VRTX","CB","DASH",
+    "DELL","HCA","KKR","ADP","SO","CMCSA","MCK","TT","CVS","PH","DUK","CME",
+    "NKE","MO","BMY","GD","CDNS","SBUX","MMM","NEM","COIN","MMC","MCO","SHW",
+    "SNPS","AMT","ICE","NOC","EQIX","HWM","UPS","WM","ORLY","EMR","RCL",
+    "ABNB","BK","JCI","MDLZ","TDG","CTAS","AON","TEL","ECL","USB","GLW",
+    "PNC","APO","ITW","MAR","WMB","ELV","MSI","CSX","PWR","REGN","SPG",
+    "FTNT","COR","MNST","CI","PYPL","GM","RSG","AEP","ADSK","AJG","WDAY",
+    "ZTS","VST","NSC","CL","AZO","CMI","SRE","TRV","FDX","FCX","HLT","DLR",
+    "MPC","KMI","EOG","AXON","AFL","TFC","DDOG","WBD","URI","PSX","STX",
+    "LHX","APD","SLB","O","MET","NXPI","F","VLO","ROST","PCAR","WDC","BDX",
+    "ALL","IDXX","CARR","D","EA","PSA","NDAQ","EW","MPWR","ROP","XEL","BKR",
+    "TTWO","FAST","GWW","AME","EXC","XYZ","CAH","CBRE","MSCI","DHI","AIG",
+    "ETR","KR","OKE","AMP","TGT","PAYX","CMG","CTVA","CPRT","A","FANG","ROK",
+    "GRMN","OXY","PEG","LVS","FICO","KMB","CCI","YUM","VMC","CCL","TKO",
+    "DAL","EBAY","MLM","KDP","IQV","XYL","PRU","WEC","OTIS","RMD","FI",
+    "CHTR","SYY","CTSH","ED","PCG","WAB","VTR","EL","LYV","HIG","NUE","HSY",
+    "DD","GEHC","MCHP","HUM","EQT","NRG","TRGP","FIS","STT","HPE","VICI",
+    "ACGL","LEN","KEYS","RJF","IBKR","SMCI","VRSK","UAL","IRM","EME","IR",
+    "WTW","EXR","ODFL","KHC","MTD","CSGP","ADM","TER","K","FOXA","TSCO",
+    "FSLR","MTB","DTE","ROL","AEE","KVUE","ATO","FITB","ES","FOX","BRO",
+    "EXPE","WRB","PPL","FE","HPQ","EFX","BR","CBOE","AWK","HUBB","CNP","DOV",
+    "GIS","AVB","TDY","EXE","TTD","VLTO","LDOS","NTRS","HBAN","CINF","PTC",
+    "WSM","JBL","NTAP","PHM","ULTA","STE","EQR","STZ","STLD","TPR","DXCM",
+    "BIIB","HAL","TROW","VRSN","PODD","CMS","CFG","PPG","DG","TPL","RF",
+    "CHD","EIX","LH","DRI","CDW","WAT","L","NVR","DVN","SBAC","TYL","ON",
+    "IP","WST","LULU","NI","DLTR","ZBH","KEY","DGX","RL","SW","TRMB","BG",
+    "GPN","IT","J","PFG","CPAY","TSN","INCY","AMCR","CHRW","CTRA","GDDY",
+    "LII","GPC","EVRG","APTV","PKG","SNA","PNR","CNC","INVH","BBY","MKC",
+    "LNT","DOW","PSKY","ESS","WY","EXPD","HOLX","GEN","IFF","JBHT","FTV",
+    "LUV","NWS","MAA","ERIE","LYB","NWSA","FFIV","OMC","ALLE","TXT","KIM",
+    "COO","UHS","CLX","ZBRA","AVY","CF","DPZ","MAS","EG","NDSN","BF.B",
+    "BLDR","IEX","BALL","DOC","HII","BXP","REG","WYNN","UDR","DECK","VTRS",
+    "SOLV","HRL","BEN","ALB","SWKS","HST","SJM","DAY","RVTY","JKHY","CPT",
+    "AKAM","HAS","AIZ","MRNA","PNW","GL","IVZ","PAYC","SWK","NCLH","ARE",
+    "ALGN","FDS","POOL","AES","GNRC","TECH","BAX","IPG","AOS","EPAM","CPB",
+    "CRL","MGM","MOS","TAP","LW","DVA","FRT","LKQ","CAG","APA","MOH","MTCH",
+    "HSIC","MHK","EMN","KMX"
+]
 
-st.markdown(
+# ===== 2) CONTROLS =====
+st.sidebar.header("Controls")
+max_per_section = st.sidebar.slider("Max tickers to show per section", 5, 80, 30, 5)
+lookback_days = st.sidebar.selectbox("Lookback data (days)", [60, 90, 120, 180, 252], index=2)
+
+st.title("S&P MACD Scanner – Fresh / Just Crossed / About To 🟢")
+st.caption("Logic (daily): 1) about to cross up 2) just crossed up 3) still bullish. Always show something.")
+
+# ===== 3) HELPERS =====
+
+@st.cache_data(show_spinner=False)
+def fetch_history(ticker: str, days: int):
+    try:
+        df = yf.download(
+            ticker,
+            period=f"{days}d",
+            interval="1d",
+            auto_adjust=True,
+            progress=False,
+        )
+        if df is None or df.empty:
+            return None
+        return df
+    except Exception:
+        return None
+
+def compute_macd_from_df(df: pd.DataFrame):
     """
-    <style>
-      :root { --bg:#0f1117; --panel:#171a23; --muted:#9aa3b2; --text:#e7e9ef; }
-      html, body, [class*="css"], .stApp { font-size: 16px; background: var(--bg); color: var(--text); }
-      section[data-testid="stSidebar"] { background: var(--panel); border-right: 1px solid #202636; }
-      .title { text-align:center; font-size: 32px; font-weight: 800; margin: 6px 0 2px; }
-      .sub { text-align:center; color: var(--muted); font-size: 13px; margin-bottom: 6px; }
-      .market { text-align:center; font-size: 12px; margin-bottom: 10px; }
-      .open { color:#86efac; }
-      .closed { color:#fca5a5; }
-      .badge { display:inline-block; padding:.25rem .6rem; border-radius:999px; font-weight:800; font-size:12px; }
-      .b-strong { background:#103b28; color:#2cd199; }
-      .b-mod { background:#3a2e12; color:#f7c257; }
-      .b-weak { background:#3b1a1a; color:#ff8c8c; }
-      .status { color: var(--muted); font-size: 12px; margin-top: 2px; text-align:center; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-API_BASE = "https://api.unusualwhales.com/api"
-API_KEY = (
-    st.secrets.get("UW_API_KEY") if hasattr(st, "secrets") and "UW_API_KEY" in st.secrets else os.getenv("UNUSUAL_WHALES_API_KEY")
-)
-
-# =========================
-# ---- Market Hours ----------
-# =========================
-
-def is_market_open(now_utc: datetime) -> bool:
-    try:
-        tz = ZoneInfo("America/New_York") if ZoneInfo else timezone(timedelta(hours=-4))
-        now_et = now_utc.astimezone(tz)
-        if now_et.weekday() >= 5:  # 5=Sat, 6=Sun
-            return False
-        open_t, close_t = dtime(9, 30), dtime(16, 0)
-        return open_t <= now_et.time() <= close_t
-    except Exception:
-        return False
-
-# =========================
-# ---- UW Client ------------
-# =========================
-
-def api_headers() -> Dict[str, str]:
-    return {"Authorization": f"Bearer {API_KEY}", "Accept": "application/json"}
-
-
-def http_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    url = f"{API_BASE.rstrip('/')}/{path.lstrip('/')}"
-    r = requests.get(url, headers=api_headers(), params=params, timeout=30)
-    r.raise_for_status()
-    try:
-        return r.json()
-    except Exception:
-        return {"raw": r.text}
-
-@st.cache_data(show_spinner=False, ttl=60)
-def fetch_flow_alerts(limit: int = 250, newer_than_iso: Optional[str] = None) -> List[Dict[str, Any]]:
-    params: Dict[str, Any] = {"limit": max(1, min(limit, 250))}
-    if newer_than_iso:
-        params["newer_than"] = newer_than_iso
-    data = http_get("/option-trades/flow-alerts", params)
-    if isinstance(data, dict) and "data" in data:
-        return data["data"]
-    if isinstance(data, list):
-        return data
-    return []
-
-# =========================
-# ---- Scoring --------------
-# =========================
-
-def _safe_float(x, default=0.0) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return float(default)
-
-
-def _dte_days(expiry_iso: Optional[str]) -> Optional[int]:
-    if not expiry_iso:
-        return None
-    try:
-        return (datetime.fromisoformat(expiry_iso) - datetime.utcnow()).days
-    except Exception:
+    Return LAST and PREV values for MACD, signal, hist.
+    """
+    if df is None or df.empty or "Close" not in df.columns:
         return None
 
+    close = df["Close"]
+    ema12 = close.ewm(span=12, adjust=False).mean()
+    ema26 = close.ewm(span=26, adjust=False).mean()
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+    hist = macd - signal
 
-def _tanh(x: float) -> float:
-    import math
-    try:
-        return math.tanh(x)
-    except Exception:
-        return 0.0
+    if len(macd) < 2:
+        return None
 
+    out = {
+        "close": float(close.iloc[-1]),
+        "macd": float(macd.iloc[-1]),
+        "signal": float(signal.iloc[-1]),
+        "hist": float(hist.iloc[-1]),
+        "macd_prev": float(macd.iloc[-2]),
+        "signal_prev": float(signal.iloc[-2]),
+        "hist_prev": float(hist.iloc[-2]),
+    }
+    return out
 
-def score_alert(a: Dict[str, Any]) -> Tuple[float, str, Dict[str, Any]]:
-    total_prem = _safe_float(a.get("total_premium", a.get("premium")))
-    ask_prem = _safe_float(a.get("total_ask_side_prem", a.get("ask_premium")))
-    bid_prem = _safe_float(a.get("total_bid_side_prem", a.get("bid_premium")))
-    option_type = (a.get("option_type") or a.get("type") or "").lower()
-    expiry = a.get("expiry") or a.get("expiration")
-    dte = _dte_days(expiry)
+def classify_fresh_bullish(row: dict):
+    """
+    Return (bucket_name, note, fresh_score)
+    Buckets:
+      1. ABOUT_TO_BULL   – macd below signal but curling up
+      2. JUST_CROSSED_UP – macd_prev < signal_prev and macd >= signal
+      3. STILL_BULLISH   – macd >= signal (already up)
+    """
+    macd = row["macd"]
+    sig = row["signal"]
+    hist = row["hist"]
+    macd_prev = row["macd_prev"]
+    sig_prev = row["signal_prev"]
+    hist_prev = row["hist_prev"]
 
-    net_ask_bias = ask_prem - bid_prem
-    side = "CALL" if option_type == "call" or net_ask_bias >= 0 else "PUT"
+    diff = macd - sig
+    diff_prev = macd_prev - sig_prev
 
-    prem_term = _tanh(total_prem / 250_000.0)
-    ask_term = _tanh(max(0.0, net_ask_bias) / (total_prem + 1e-9))
-    if dte is None: dte_term = 0.5
-    elif 7 <= dte <= 35: dte_term = 1.0
-    elif 1 <= dte < 7: dte_term = 0.6
-    elif 36 <= dte <= 90: dte_term = 0.7
-    else: dte_term = 0.4
+    # 2) JUST CROSSED UP
+    if diff_prev < 0 and diff >= 0:
+        return ("JUST_CROSSED_UP", "MACD crossed above signal on the latest bar.", 95)
 
-    open_only = 1.0 if a.get("all_opening", False) else 0.0
-    sweepish = 1.0 if any(t in (a.get("tags") or []) for t in ["sweep", "intermarket_sweep", "i_sweep"]) else 0.0
+    # 1) ABOUT TO CROSS (still below, but improving)
+    #  - below signal
+    #  - closer to zero than yesterday
+    #  - histogram improving
+    if diff < 0 and diff > diff_prev and hist > hist_prev:
+        return ("ABOUT_TO_BULL", "MACD below signal but curling up / histogram rising.", 85)
 
-    score = 0.40*prem_term + 0.30*ask_term + 0.20*dte_term + 0.05*open_only + 0.05*sweepish
-    out = {"total_premium": total_prem, "ask_bias": net_ask_bias, "dte": dte, "all_opening": bool(a.get("all_opening", False))}
-    return round(100*score, 1), side, out
+    # 3) STILL BULLISH (already above signal, hist >= 0)
+    if diff > 0 and hist >= 0:
+        return ("STILL_BULLISH", "MACD above signal and histogram is positive.", 70)
 
-# =========================
-# ---- Ranking ---------------
-# =========================
+    # else → neutral
+    return (None, "Does not meet bullish freshness criteria.", 0)
 
-def rank_alerts(alerts: List[Dict[str, Any]],
-                min_premium: float,
-                min_size: int,
-                max_weeks_to_expiry: int,
-                prefer_opening: bool,
-                prefer_ask_bias: bool,
-                cap: int = 50) -> pd.DataFrame:
-    rows: List[Dict[str, Any]] = []
-    for a in alerts:
-        ticker = a.get("ticker") or a.get("underlying_symbol") or a.get("symbol") or ""
-        opt_symbol = a.get("option_symbol") or ""
-        expiry = a.get("expiry") or a.get("expiration")
-        total_prem = _safe_float(a.get("total_premium", a.get("premium")))
-        total_size = int(a.get("total_size", a.get("size", 0)) or 0)
+def classify_fresh_bearish(row: dict):
+    macd = row["macd"]
+    sig = row["signal"]
+    hist = row["hist"]
+    macd_prev = row["macd_prev"]
+    sig_prev = row["signal_prev"]
+    hist_prev = row["hist_prev"]
 
-        if total_prem < float(min_premium):
+    diff = macd - sig
+    diff_prev = macd_prev - sig_prev
+
+    # JUST CROSSED DOWN
+    if diff_prev > 0 and diff <= 0:
+        return ("JUST_CROSSED_DOWN", "MACD just crossed down.", 95)
+
+    # ABOUT TO CROSS DOWN
+    if diff > 0 and diff < diff_prev and hist < hist_prev:
+        return ("ABOUT_TO_BEAR", "MACD above signal but curling down / hist falling.", 85)
+
+    # STILL BEARISH
+    if diff < 0 and hist <= 0:
+        return ("STILL_BEARISH", "MACD below signal, histogram negative.", 70)
+
+    return (None, "Does not meet bearish freshness criteria.", 0)
+
+# ===== 4) SCAN =====
+
+bull_about = []
+bull_just = []
+bull_still = []
+bear_about = []
+bear_just = []
+bear_still = []
+neutral = []
+
+with st.spinner("Scanning tickers... (first run can be slow)"):
+    for ticker in SP500_TICKERS:
+        df = fetch_history(ticker, lookback_days)
+        macd_row = compute_macd_from_df(df)
+        if macd_row is None:
+            neutral.append({
+                "ticker": ticker,
+                "close": None,
+                "macd": None,
+                "signal": None,
+                "hist": None,
+                "fresh_score": 0,
+                "verdict": "NO DATA",
+                "note": "yfinance returned empty / not enough candles",
+            })
             continue
-        if min_size and total_size < int(min_size):
-            continue
-        if max_weeks_to_expiry and expiry:
-            dte = _dte_days(expiry)
-            if dte is not None and dte > max_weeks_to_expiry*7:
-                continue
 
-        score, side, extras = score_alert(a)
-        if prefer_opening and not extras.get("all_opening"): score *= 0.95
-        if prefer_ask_bias and extras.get("ask_bias", 0) <= 0: score *= 0.95
+        base = {
+            "ticker": ticker,
+            "close": round(macd_row["close"], 2),
+            "macd": round(macd_row["macd"], 4),
+            "signal": round(macd_row["signal"], 4),
+            "hist": round(macd_row["hist"], 4),
+        }
 
-        rows.append({
-            "Ticker": ticker,
-            "VerdictSide": side,
-            "Option": opt_symbol or ("CALL" if side == "CALL" else "PUT"),
-            "Expiry": expiry or "",
-            "Confidence": score,
-            "Total Premium ($)": int(total_prem),
-            "Ask Prem ($)": int(_safe_float(a.get("total_ask_side_prem", a.get("ask_premium")))),
-            "Bid Prem ($)": int(_safe_float(a.get("total_bid_side_prem", a.get("bid_premium")))),
-            "Size": total_size,
-            "Why": f"prem={int(total_prem):,}, ask_bias={int(extras.get('ask_bias',0)):,}, dte={extras.get('dte')}"
-        })
+        bull_label, bull_note, bull_score = classify_fresh_bullish(macd_row)
+        bear_label, bear_note, bear_score = classify_fresh_bearish(macd_row)
 
-    df = pd.DataFrame(rows).sort_values(["Confidence", "Total Premium ($)"], ascending=[False, False]).reset_index(drop=True)
-    if len(df) > cap:
-        df = df.head(cap)
-    return df
+        # PRIORITY: bullish first, then bearish, else neutral
+        if bull_label == "ABOUT_TO_BULL":
+            bull_about.append({**base, "fresh_score": bull_score, "note": bull_note, "verdict": "ABOUT TO (CALLS)"})
+        elif bull_label == "JUST_CROSSED_UP":
+            bull_just.append({**base, "fresh_score": bull_score, "note": bull_note, "verdict": "JUST CROSSED (CALLS)"})
+        elif bull_label == "STILL_BULLISH":
+            bull_still.append({**base, "fresh_score": bull_score, "note": bull_note, "verdict": "STILL BULLISH (CALLS)"})
+        elif bear_label == "ABOUT_TO_BEAR":
+            bear_about.append({**base, "fresh_score": bear_score, "note": bear_note, "verdict": "ABOUT TO (PUTS)"})
+        elif bear_label == "JUST_CROSSED_DOWN":
+            bear_just.append({**base, "fresh_score": bear_score, "note": bear_note, "verdict": "JUST CROSSED (PUTS)"})
+        elif bear_label == "STILL_BEARISH":
+            bear_still.append({**base, "fresh_score": bear_score, "note": bear_note, "verdict": "STILL BEARISH (PUTS)"})
+        else:
+            neutral.append({**base, "fresh_score": 0, "verdict": "NEUTRAL / LATE / NO TRADE", "note": "MACD not in ideal spot"})
 
-# =========================
-# ---- Sidebar (Advanced) ---
-# =========================
-with st.sidebar:
-    st.markdown("### ⚙️ Advanced settings")
-    st.caption("Power users tweak here; newcomers can ignore this panel.")
+# sort by fresh_score desc
+bull_about = sorted(bull_about, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
+bull_just = sorted(bull_just, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
+bull_still = sorted(bull_still, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
+bear_about = sorted(bear_about, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
+bear_just = sorted(bear_just, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
+bear_still = sorted(bear_still, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
+neutral = sorted(neutral, key=lambda x: x["ticker"])[:max_per_section]
 
-    minutes_window = st.number_input("Scan window (minutes)", min_value=5, max_value=240, value=45, step=5, help="Used as 'newer_than' filter for flow alerts")
-    min_premium = st.number_input("Min total premium ($)", min_value=0, max_value=5_000_000, value=500_000, step=50_000)
-    min_size = st.number_input("Min total size (contracts)", min_value=0, max_value=100_000, value=10, step=10)
-    max_weeks_to_expiry = st.number_input("Max weeks to expiry", min_value=1, max_value=52, value=5, step=1)
+# ===== 5) DISPLAY =====
 
-    prefer_opening = st.toggle("Favor opening flow", value=True)
-    prefer_ask_bias = st.toggle("Favor ask-side buying", value=True)
+col1, col2, col3 = st.columns(3)
 
-    st.markdown("#### Filters")
-    high_conf_only = st.toggle("Show only high-confidence (≥ 80)", value=False)
+with col1:
+    st.subheader("🟢 1. About to cross bullish (CALLS)")
+    st.dataframe(pd.DataFrame(bull_about))
 
-    st.markdown("#### Recommendations")
-    rec_top_n = st.slider("Number of trade ideas", min_value=5, max_value=20, value=10)
-    rec_weeks_min = st.number_input("Target min weeks (expiry)", min_value=1, max_value=6, value=1)
-    rec_weeks_max = st.number_input("Target max weeks (expiry)", min_value=1, max_value=8, value=3)
-    rec_otm_pct = st.slider("Moneyness (±% OTM)", min_value=1, max_value=15, value=4)
+with col2:
+    st.subheader("🟢 2. Just crossed bullish (CALLS)")
+    st.dataframe(pd.DataFrame(bull_just))
 
-    st.markdown("#### Backtest (toy)")
-    bt_start = st.date_input("Start", value=date.today() - timedelta(days=30))
-    bt_end = st.date_input("End", value=date.today())
-    take_profit = st.number_input("Take-profit %", min_value=1.0, max_value=200.0, value=15.0, step=0.5)
-    stop_loss = st.number_input("Stop-loss %", min_value=0.5, max_value=100.0, value=8.0, step=0.5)
-    max_hold_days = st.number_input("Max holding days", min_value=1, max_value=30, value=5, step=1)
+with col3:
+    st.subheader("🟢 3. Still bullish (CALLS)")
+    st.dataframe(pd.DataFrame(bull_still))
 
-# =========================
-# ---- Header & CTA ----------
-# =========================
-st.markdown('<div class="title">🦊 SilverFoxFlow — UOA 2.0</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub">Tap SCAN to pull live flow from Unusual Whales. Green = calls, Red = puts, Gray = skip.</div>', unsafe_allow_html=True)
+st.markdown("---")
 
-now_utc = datetime.now(timezone.utc)
+col4, col5, col6 = st.columns(3)
+with col4:
+    st.subheader("🔴 About to cross bearish (PUTS)")
+    st.dataframe(pd.DataFrame(bear_about))
 
-def is_market_open_banner():
-    open_flag = is_market_open(now_utc)
-    if open_flag:
-        st.markdown("<div class='market open'>Market Open — Live institutional flow should be active.</div>", unsafe_allow_html=True)
-    else:
-        st.markdown("<div class='market closed'>⚠ Market Closed — Live hedge fund flow is limited; confidence may be lower off-hours.</div>", unsafe_allow_html=True)
+with col5:
+    st.subheader("🔴 Just crossed bearish (PUTS)")
+    st.dataframe(pd.DataFrame(bear_just))
 
-is_market_open_banner()
+with col6:
+    st.subheader("🔴 Still bearish (PUTS)")
+    st.dataframe(pd.DataFrame(bear_still))
 
-c1, c2, c3 = st.columns([1,2,1])
-with c2:
-    scan_now = st.button("🚀 SCAN NOW", type="primary")
+st.markdown("---")
+st.subheader("😐 Neutral / Late / No Trade")
+st.dataframe(pd.DataFrame(neutral))
 
-status = st.empty()
-
-# ============== SCAN ===============
-alerts: List[Dict[str, Any]] = []
-ranked_df: Optional[pd.DataFrame] = None
-
-if scan_now:
-    if not API_KEY:
-        st.error("No Unusual Whales API key found. Add UNUSUAL_WHALES_API_KEY in Secrets.")
-    else:
-        with st.spinner("Scanning flow alerts…"):
-            try:
-                newer_than = (datetime.utcnow() - timedelta(minutes=int(minutes_window))).strftime("%Y-%m-%dT%H:%M:%SZ")
-                alerts = fetch_flow_alerts(limit=250, newer_than_iso=newer_than)
-                fetched = len(alerts) if isinstance(alerts, list) else 0
-                status.markdown(f"<div class='status'>Fetched <b>{fetched}</b> raw alerts from Unusual Whales • window: {minutes_window}m • {datetime.utcnow().strftime('%H:%M:%S')} UTC</div>", unsafe_allow_html=True)
-            except Exception as e:
-                st.error(f"Fetch error: {e}")
-                st.caption(traceback.format_traceback())
-
-        if alerts:
-            ranked_df = rank_alerts(
-                alerts=alerts,
-                min_premium=min_premium,
-                min_size=min_size,
-                max_weeks_to_expiry=max_weeks_to_expiry,
-                prefer_opening=prefer_opening,
-                prefer_ask_bias=prefer_ask_bias,
-            )
-
-# ============ RESULTS TABLE ============
-if ranked_df is not None:
-    st.markdown("### 🔎 Top candidates")
-    top_score = ranked_df["Confidence"].max() if not ranked_df.empty else 0
-    if top_score >= 80:
-        st.markdown('<span class="badge b-strong">Signal quality: STRONG</span>', unsafe_allow_html=True)
-    elif top_score >= 65:
-        st.markdown('<span class="badge b-mod">Signal quality: MODERATE</span>', unsafe_allow_html=True)
-    else:
-        st.markdown('<span class="badge b-weak">Signal quality: WEAK</span>', unsafe_allow_html=True)
-
-    disp = ranked_df.copy()
-    if high_conf_only:
-        disp = disp[disp["Confidence"] >= 80]
-
-    # Plain verdict & numeric confidence
-    disp["Verdict"] = disp["VerdictSide"].apply(lambda s: f"BUY {s}")
-    disp["Confidence (0–100)"] = disp["Confidence"].round(1)
-
-    order_cols = ["Ticker", "Verdict", "Confidence (0–100)", "Expiry", "Option", "Total Premium ($)", "Ask Prem ($)", "Bid Prem ($)", "Size", "Why"]
-    for c in order_cols:
-        if c not in disp.columns:
-            disp[c] = ""
-
-    st.dataframe(disp[order_cols], use_container_width=True, hide_index=True)
-
-# ============ RECOMMENDED TRADES ============
-
-def nearest_friday_within_weeks(base: date, wmin: int, wmax: int) -> Optional[date]:
-    cands = []
-    for w in range(max(1, wmin), max(wmin, wmax) + 1):
-        d = base + timedelta(days=7*w)
-        while d.weekday() != 4:  # Friday
-            d += timedelta(days=1)
-        cands.append(d)
-    return min(cands) if cands else None
-
-
-def suggest_contracts(df: pd.DataFrame, top_n: int, weeks_min: int, weeks_max: int, otm_pct: int) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-    ideas = []
-    base = df.copy()
-    if high_conf_only:
-        base = base[base["Confidence"] >= 80]
-    picks = base.sort_values(["Confidence", "Total Premium ($)"], ascending=[False, False]).head(int(top_n))
-    today = datetime.utcnow().date()
-
-    for _, r in picks.iterrows():
-        tk = str(r["Ticker"]).upper()
-        side = str(r["VerdictSide"]).upper()
-        try:
-            last_close = float(yf.Ticker(tk).history(period="1d").iloc[-1]["Close"])  # fallback
-        except Exception:
-            last_close = None
-
-        target_exp = nearest_friday_within_weeks(today, weeks_min, weeks_max)
-        exp_str = target_exp.isoformat() if target_exp else (str(r.get("Expiry", "")) or "")
-
-        strike = None
-        if last_close is not None:
-            if side == "CALL":
-                strike = round(last_close * (1 + otm_pct/100.0))
-            else:
-                strike = round(last_close * (1 - otm_pct/100.0))
-
-        chosen_strike = strike
-        try:
-            tkr = yf.Ticker(tk)
-            exps = tkr.options or []
-            if exps:
-                # choose nearest to target_exp
-                from datetime import datetime as _dt
-                if target_exp:
-                    closest = min(exps, key=lambda x: abs((_dt.strptime(x, "%Y-%m-%d").date() - target_exp).days))
-                else:
-                    closest = exps[0]
-                chain = tkr.option_chain(closest)
-                tbl = chain.calls if side == "CALL" else chain.puts
-                if strike is not None and not tbl.empty:
-                    tbl = tbl.copy(); tbl["_diff"] = (tbl["strike"] - strike).abs()
-                    row = tbl.sort_values("_diff").iloc[0]
-                    chosen_strike = float(row["strike"])
-                    exp_str = closest
-        except Exception:
-            pass
-
-        ideas.append({
-            "Ticker": tk,
-            "Side": side,
-            "Confidence": round(float(r["Confidence"]), 1),
-            "Suggested Expiry": exp_str,
-            "Suggested Strike": chosen_strike if chosen_strike is not None else "ATM",
-            "Plan": "TP 15% / SL 8% / hold 3–5d",
-            "Order": f"BUY 1x {tk} {exp_str} {int(chosen_strike) if isinstance(chosen_strike,(int,float)) else 'ATM'}{('C' if side=='CALL' else 'P')} @ MKT"
-        })
-    return pd.DataFrame(ideas)
-
-if ranked_df is not None and not ranked_df.empty:
-    st.markdown("### 🎯 Recommended trades (auto-generated)")
-    st.markdown("""
-    <div style='background:#2a1f1f;border:1px solid rgba(239,68,68,.35);padding:.6rem .8rem;border-radius:10px;font-size:13px;'>
-    ⚠️ <b>Disclosure:</b> Trades are based on <b>live Unusual Whales</b> flow, but the <b>confidence score</b>, <b>recommendations</b>, and the <b>backtest</b> are model estimates — not guarantees or financial advice.
-    </div>
-    """, unsafe_allow_html=True)
-    st.caption("Confidence = 0–100 composite: premium heft (40%), ask-side bias (30%), DTE fit (20%), opening/sweep tags (10%). Not a win‑probability.")
-
-    rec_df = suggest_contracts(ranked_df, rec_top_n, rec_weeks_min, rec_weeks_max, rec_otm_pct)
-    if rec_df.empty:
-        st.info("Not enough clean signals for recommendations. Loosen filters or widen the scan window.")
-    else:
-        rec_show = rec_df.copy()
-        rec_show["Confidence (0–100)"] = rec_show["Confidence"].round(1)
-        order_cols = ["Ticker", "Side", "Confidence (0–100)", "Suggested Expiry", "Suggested Strike", "Plan", "Order"]
-        st.dataframe(rec_show[order_cols], use_container_width=True, hide_index=True)
-        all_txt = "\n".join(rec_df["Order"].tolist())
-        st.download_button("⬇️ Export orders (txt)", data=all_txt, file_name="silverfox_orders.txt")
-
-# ============ Backtest (toy) ============
-
-def naive_backtest(trades: pd.DataFrame, tp_pct: float, sl_pct: float) -> Dict[str, Any]:
-    if trades is None or trades.empty:
-        return {"trades": 0, "win_rate": None, "avg_gain": None}
-    pnl = []
-    for _, row in trades.iterrows():
-        base = (row.get("Confidence", 0.0) - 50.0) / 100.0
-        gain = max(-sl_pct/100.0, min(tp_pct/100.0, base))
-        pnl.append(gain)
-    wins = sum(1 for g in pnl if g > 0)
-    return {"trades": len(pnl), "win_rate": round(100*wins/len(pnl),1), "avg_gain": round(100*sum(pnl)/len(pnl),2)}
-
-if ranked_df is not None:
-    st.markdown("### 🧪 Quick backtest (toy)")
-    base_df = None
-    if 'rec_df' in locals() and rec_df is not None and not rec_df.empty:
-        base_df = rec_df.rename(columns={"Confidence":"Confidence"})
-    elif ranked_df is not None and not ranked_df.empty:
-        base_df = ranked_df
-
-    if base_df is not None and not base_df.empty:
-        res = naive_backtest(base_df, take_profit, stop_loss)
-        st.write(f"**Trades:** {res['trades']} · **Win‑rate (toy):** {res['win_rate']}% · **Avg gain (toy):** {res['avg_gain']}%")
-
-# ===== Footer tips =====
-with st.expander("📘 Setup tips & notes", expanded=False):
-    st.markdown(
-        """
-        • Source: **Unusual Whales** `/api/option-trades/flow-alerts` with `newer_than` and Bearer auth.\
-        • Filters are applied client‑side; we can add server‑side parameters later if desired.\
-        • Recommendations are **advisory**, using near‑dated expiries and ±OTM strikes; always confirm liquidity.\
-        • Backtest is a **toy proxy**; wire historical bars & option chains for production‑grade stats.
-        """
-    )
+st.caption(f"Last run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
