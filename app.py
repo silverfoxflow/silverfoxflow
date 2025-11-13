@@ -1,270 +1,339 @@
-import streamlit as st
+# app.py — SilverFoxFlow MACD Scanner — Mach 6.2 (daily only; no sidebar; full hard-coded S&P tickers)
+# Requirements: streamlit, yfinance, pandas, numpy
+#   pip install streamlit yfinance pandas numpy
+
+import time
+import math
+import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+import streamlit as st
+from datetime import datetime, timedelta, timezone
 
-st.set_page_config(page_title="S&P MACD Scanner – Fresh", layout="wide")
+st.set_page_config(page_title="SilverFoxFlow MACD Scanner — Mach 6.2", layout="wide")
 
-# ===== 1) YOUR S&P LIST (from your paste) =====
-SP500_TICKERS = [
-    "NVDA","AAPL","MSFT","GOOG","GOOGL","AMZN","AVGO","META","TSLA","BRK.B",
-    "JPM","WMT","LLY","ORCL","V","MA","XOM","PLTR","NFLX","JNJ","AMD","COST",
-    "BAC","ABBV","HD","PG","GE","CVX","UNH","KO","CSCO","IBM","WFC","CAT",
-    "MS","MU","GS","AXP","CRM","RTX","TMUS","PM","APP","ABT","MRK","TMO",
-    "MCD","DIS","UBER","PEP","ANET","LRCX","LIN","QCOM","NOW","INTC","ISRG",
-    "INTU","AMAT","C","BX","BLK","T","SCHW","APH","NEE","VZ","BKNG","AMGN",
-    "KLAC","GEV","TJX","ACN","BA","DHR","BSX","PANW","GILD","ETN","SPGI",
-    "TXN","ADBE","PFE","COF","CRWD","SYK","LOW","UNP","HOOD","HON","DE",
-    "WELL","PGR","PLD","CEG","MDT","ADI","LMT","COP","VRTX","CB","DASH",
-    "DELL","HCA","KKR","ADP","SO","CMCSA","MCK","TT","CVS","PH","DUK","CME",
-    "NKE","MO","BMY","GD","CDNS","SBUX","MMM","NEM","COIN","MMC","MCO","SHW",
-    "SNPS","AMT","ICE","NOC","EQIX","HWM","UPS","WM","ORLY","EMR","RCL",
-    "ABNB","BK","JCI","MDLZ","TDG","CTAS","AON","TEL","ECL","USB","GLW",
-    "PNC","APO","ITW","MAR","WMB","ELV","MSI","CSX","PWR","REGN","SPG",
-    "FTNT","COR","MNST","CI","PYPL","GM","RSG","AEP","ADSK","AJG","WDAY",
-    "ZTS","VST","NSC","CL","AZO","CMI","SRE","TRV","FDX","FCX","HLT","DLR",
-    "MPC","KMI","EOG","AXON","AFL","TFC","DDOG","WBD","URI","PSX","STX",
-    "LHX","APD","SLB","O","MET","NXPI","F","VLO","ROST","PCAR","WDC","BDX",
-    "ALL","IDXX","CARR","D","EA","PSA","NDAQ","EW","MPWR","ROP","XEL","BKR",
-    "TTWO","FAST","GWW","AME","EXC","XYZ","CAH","CBRE","MSCI","DHI","AIG",
-    "ETR","KR","OKE","AMP","TGT","PAYX","CMG","CTVA","CPRT","A","FANG","ROK",
-    "GRMN","OXY","PEG","LVS","FICO","KMB","CCI","YUM","VMC","CCL","TKO",
-    "DAL","EBAY","MLM","KDP","IQV","XYL","PRU","WEC","OTIS","RMD","FI",
-    "CHTR","SYY","CTSH","ED","PCG","WAB","VTR","EL","LYV","HIG","NUE","HSY",
-    "DD","GEHC","MCHP","HUM","EQT","NRG","TRGP","FIS","STT","HPE","VICI",
-    "ACGL","LEN","KEYS","RJF","IBKR","SMCI","VRSK","UAL","IRM","EME","IR",
-    "WTW","EXR","ODFL","KHC","MTD","CSGP","ADM","TER","K","FOXA","TSCO",
-    "FSLR","MTB","DTE","ROL","AEE","KVUE","ATO","FITB","ES","FOX","BRO",
-    "EXPE","WRB","PPL","FE","HPQ","EFX","BR","CBOE","AWK","HUBB","CNP","DOV",
-    "GIS","AVB","TDY","EXE","TTD","VLTO","LDOS","NTRS","HBAN","CINF","PTC",
-    "WSM","JBL","NTAP","PHM","ULTA","STE","EQR","STZ","STLD","TPR","DXCM",
-    "BIIB","HAL","TROW","VRSN","PODD","CMS","CFG","PPG","DG","TPL","RF",
-    "CHD","EIX","LH","DRI","CDW","WAT","L","NVR","DVN","SBAC","TYL","ON",
-    "IP","WST","LULU","NI","DLTR","ZBH","KEY","DGX","RL","SW","TRMB","BG",
-    "GPN","IT","J","PFG","CPAY","TSN","INCY","AMCR","CHRW","CTRA","GDDY",
-    "LII","GPC","EVRG","APTV","PKG","SNA","PNR","CNC","INVH","BBY","MKC",
-    "LNT","DOW","PSKY","ESS","WY","EXPD","HOLX","GEN","IFF","JBHT","FTV",
-    "LUV","NWS","MAA","ERIE","LYB","NWSA","FFIV","OMC","ALLE","TXT","KIM",
-    "COO","UHS","CLX","ZBRA","AVY","CF","DPZ","MAS","EG","NDSN","BF.B",
-    "BLDR","IEX","BALL","DOC","HII","BXP","REG","WYNN","UDR","DECK","VTRS",
-    "SOLV","HRL","BEN","ALB","SWKS","HST","SJM","DAY","RVTY","JKHY","CPT",
-    "AKAM","HAS","AIZ","MRNA","PNW","GL","IVZ","PAYC","SWK","NCLH","ARE",
-    "ALGN","FDS","POOL","AES","GNRC","TECH","BAX","IPG","AOS","EPAM","CPB",
-    "CRL","MGM","MOS","TAP","LW","DVA","FRT","LKQ","CAG","APA","MOH","MTCH",
-    "HSIC","MHK","EMN","KMX"
+# =========================
+# 1) FULL HARD-CODED S&P 500 LIST (from your Mach 6.1 baseline) 
+# =========================
+SP500 = [
+    "NVDA","AAPL","MSFT","GOOG","GOOGL","AMZN","AVGO","META","TSLA","BRK.B","JPM","WMT","LLY","ORCL","V","MA","XOM",
+    "PLTR","NFLX","JNJ","AMD","COST","BAC","ABBV","HD","PG","GE","CVX","UNH","KO","CSCO","IBM","WFC","CAT","MS","MU",
+    "GS","AXP","CRM","RTX","TMUS","PM","APP","ABT","MRK","TMO","MCD","DIS","UBER","PEP","ANET","LRCX","LIN","QCOM",
+    "NOW","INTC","ISRG","INTU","AMAT","C","BX","BLK","T","SCHW","APH","NEE","VZ","BKNG","AMGN","KLAC","GEV","TJX",
+    "ACN","BA","DHR","BSX","PANW","GILD","ETN","SPGI","TXN","ADBE","PFE","COF","CRWD","SYK","LOW","UNP","HOOD","HON",
+    "DE","WELL","PGR","PLD","CEG","MDT","ADI","LMT","COP","VRTX","CB","DASH","DELL","HCA","KKR","ADP","SO","CMCSA",
+    "MCK","TT","CVS","PH","DUK","CME","NKE","MO","BMY","GD","CDNS","SBUX","MMM","NEM","COIN","MMC","MCO","SHW","SNPS",
+    "AMT","ICE","NOC","EQIX","HWM","UPS","WM","ORLY","EMR","RCL","ABNB","BK","JCI","MDLZ","TDG","CTAS","AON","TEL",
+    "ECL","USB","GLW","PNC","APO","ITW","MAR","WMB","ELV","MSI","CSX","PWR","REGN","SPG","FTNT","COR","MNST","CI",
+    "PYPL","GM","RSG","AEP","ADSK","AJG","WDAY","ZTS","VST","NSC","CL","AZO","CMI","SRE","TRV","FDX","FCX","HLT",
+    "DLR","MPC","KMI","EOG","AXON","AFL","TFC","DDOG","WBD","URI","PSX","STX","LHX","APD","SLB","O","MET","NXPI",
+    "F","VLO","ROST","PCAR","WDC","BDX","ALL","IDXX","CARR","D","EA","PSA","NDAQ","EW","MPWR","ROP","XEL","BKR",
+    "TTWO","FAST","GWW","AME","EXC","XYZ","CAH","CBRE","MSCI","DHI","AIG","ETR","KR","OKE","AMP","TGT","PAYX","CMG",
+    "CTVA","CPRT","A","FANG","ROK","GRMN","OXY","PEG","LVS","FICO","KMB","CCI","YUM","VMC","CCL","TKO","DAL","EBAY",
+    "MLM","KDP","IQV","XYL","PRU","WEC","OTIS","RMD","FI","CHTR","SYY","CTSH","ED","PCG","WAB","VTR","EL","LYV","HIG",
+    "NUE","HSY","DD","GEHC","MCHP","HUM","EQT","NRG","TRGP","FIS","STT","HPE","VICI","ACGL","LEN","KEYS","RJF","IBKR",
+    "SMCI","VRSK","UAL","IRM","EME","IR","WTW","EXR","ODFL","KHC","MTD","CSGP","ADM","TER","K","FOXA","TSCO","FSLR",
+    "MTB","DTE","ROL","AEE","KVUE","ATO","FITB","ES","FOX","BRO","EXPE","WRB","PPL","SYF","FE","HPQ","EFX","BR",
+    "CBOE","AWK","HUBB","CNP","DOV","GIS","AVB","TDY","EXE","TTD","VLTO","LDOS","NTRS","HBAN","CINF","PTC","WSM",
+    "JBL","NTAP","PHM","ULTA","STE","EQR","STZ","STLD","TPR","DXCM","BIIB","HAL","TROW","VRSN","PODD","CMS","CFG",
+    "PPG","DG","TPL","RF","CHD","EIX","LH","DRI","CDW","WAT","L","NVR","DVN","SBAC","TYL","ON","IP","WST","LULU","NI",
+    "DLTR","ZBH","KEY","DGX","RL","SW","TRMB","BG","GPN","IT","J","PFG","CPAY","TSN","INCY","AMCR","CHRW","CTRA",
+    "GDDY","LII","GPC","EVRG","APTV","PKG","SNA","PNR","CNC","INVH","BBY","MKC","LNT","DOW","PSKY","ESS","WY","EXPD",
+    "HOLX","GEN","IFF","JBHT","FTV","LUV","NWS","MAA","ERIE","LYB","NWSA","FFIV","OMC","ALLE","TXT","KIM","COO","UHS",
+    "CLX","ZBRA","AVY","CF","DPZ","MAS","EG","NDSN","BF.B","BLDR","IEX","BALL","DOC","HII","BXP","REG","WYNN","UDR",
+    "DECK","VTRS","SOLV","HRL","BEN","ALB","SWKS","HST","SJM","DAY","RVTY","JKHY","CPT","AKAM","HAS","AIZ","MRNA",
+    "PNW","GL","IVZ","PAYC","SWK","NCLH","ARE","ALGN","FDS","POOL","AES","GNRC","TECH","BAX","IPG","AOS","EPAM","CPB",
+    "CRL","MGM","MOS","TAP","LW","DVA","FRT","LKQ","CAG","APA","MOH","MTCH","HSIC","MHK","EMN","KMX"
 ]
 
-# ===== 2) CONTROLS =====
-st.sidebar.header("Controls")
-max_per_section = st.sidebar.slider("Max tickers to show per section", 5, 80, 30, 5)
-lookback_days = st.sidebar.selectbox("Lookback data (days)", [60, 90, 120, 180, 252], index=2)
+# =========================================
+# 2) Helper functions (MACD, EMA, signal detection)
+# =========================================
+def ema(series: pd.Series, span: int) -> pd.Series:
+    return series.ewm(span=span, adjust=False).mean()
 
-st.title("S&P MACD Scanner – Fresh / Just Crossed / About To 🟢")
-st.caption("Logic (daily): 1) about to cross up 2) just crossed up 3) still bullish. Always show something.")
+def macd(series: pd.Series, fast=12, slow=26, signal=9):
+    macd_line = ema(series, fast) - ema(series, slow)
+    signal_line = ema(macd_line, signal)
+    hist = macd_line - signal_line
+    return macd_line, signal_line, hist
 
-# ===== 3) HELPERS =====
+def crossed_from_below(macd_line: pd.Series, signal_line: pd.Series, lookback_days=3) -> bool:
+    """True if a bullish cross (from below) occurred within last `lookback_days` bars."""
+    # Find the most recent index where MACD crosses above signal from below
+    if len(macd_line) < lookback_days + 2:
+        return False
+    recent = macd_line.index[-(lookback_days+1):]
+    for i in range(1, len(recent)):
+        prev_i = recent[i-1]
+        cur_i = recent[i]
+        if pd.notna(macd_line[prev_i]) and pd.notna(signal_line[prev_i]) and pd.notna(macd_line[cur_i]) and pd.notna(signal_line[cur_i]):
+            if macd_line[prev_i] < signal_line[prev_i] and macd_line[cur_i] >= signal_line[cur_i]:
+                return True
+    return False
 
-@st.cache_data(show_spinner=False)
-def fetch_history(ticker: str, days: int):
-    try:
-        df = yf.download(
-            ticker,
-            period=f"{days}d",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-        )
-        if df is None or df.empty:
-            return None
-        return df
-    except Exception:
-        return None
-
-def compute_macd_from_df(df: pd.DataFrame):
+def about_to_cross_from_below(macd_line: pd.Series, signal_line: pd.Series) -> bool:
     """
-    Return LAST and PREV values for MACD, signal, hist.
+    'About to cross' definition:
+      - Today: MACD < Signal (still below)
+      - MACD rising faster than signal (slope up and leading toward a cross)
+      - Distance is 'close': |signal - macd| <= proximity band based on MACD ATR-like measure
     """
-    if df is None or df.empty or "Close" not in df.columns:
-        return None
+    if len(macd_line) < 5:
+        return False
+    m_now, s_now = macd_line.iloc[-1], signal_line.iloc[-1]
+    m_prev, s_prev = macd_line.iloc[-2], signal_line.iloc[-2]
 
-    close = df["Close"]
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9, adjust=False).mean()
-    hist = macd - signal
+    # Must be below, and rising toward it
+    if not (m_now < s_now and m_now > m_prev and (m_now - m_prev) >= 0 and (s_now - s_prev) <= (m_now - m_prev) + 1e-9):
+        return False
 
-    if len(macd) < 2:
-        return None
+    # Proximity band: use rolling std of (signal - macd) as adaptive threshold
+    spread = (signal_line - macd_line).dropna()
+    band = spread.rolling(20).std().iloc[-1] if len(spread) >= 20 else spread.std()
+    if pd.isna(band) or band == 0:
+        band = abs(s_now) * 0.02 + 0.02  # fallback
 
-    out = {
-        "close": float(close.iloc[-1]),
-        "macd": float(macd.iloc[-1]),
-        "signal": float(signal.iloc[-1]),
-        "hist": float(hist.iloc[-1]),
-        "macd_prev": float(macd.iloc[-2]),
-        "signal_prev": float(signal.iloc[-2]),
-        "hist_prev": float(hist.iloc[-2]),
-    }
+    return abs(s_now - m_now) <= max(band * 0.75, 0.02)
+
+def already_crossed_bullish(macd_line: pd.Series, signal_line: pd.Series, min_days_ago=4, max_days_ago=20) -> bool:
+    """
+    Cross happened more than `min_days_ago` bars but within `max_days_ago` bars,
+    and MACD remains above signal now.
+    """
+    if len(macd_line) < max_days_ago + 2:
+        return False
+    # Find last cross from below
+    cross_idx = None
+    for i in range(len(macd_line)-max_days_ago-1, len(macd_line)-1):
+        if i <= 0: 
+            continue
+        if macd_line.iloc[i-1] < signal_line.iloc[i-1] and macd_line.iloc[i] >= signal_line.iloc[i]:
+            cross_idx = i
+    if cross_idx is None:
+        return False
+    bars_ago = len(macd_line) - 1 - cross_idx
+    return (bars_ago >= min_days_ago) and (bars_ago <= max_days_ago) and (macd_line.iloc[-1] > signal_line.iloc[-1])
+
+def ema200(series: pd.Series) -> pd.Series:
+    return ema(series, 200)
+
+# =========================================
+# 3) Data fetch (robust batching)
+# =========================================
+def fetch_history_batch(tickers, start, end, retry=2, pause=1.0):
+    """
+    Use yfinance.download in batches to reduce rate-limit issues.
+    Returns dict[ticker] = Series(Adj Close)
+    """
+    out = {}
+    batch_size = 40
+    for i in range(0, len(tickers), batch_size):
+        chunk = tickers[i:i+batch_size]
+        tries = 0
+        while tries <= retry:
+            try:
+                df = yf.download(chunk, start=start, end=end, interval="1d", auto_adjust=True, group_by="ticker", progress=False, threads=True)
+                if isinstance(df.columns, pd.MultiIndex):
+                    # MultiTicker format
+                    for t in chunk:
+                        if t in df.columns.get_level_values(0):
+                            adj = df[(t, "Close")].dropna()
+                            if not adj.empty:
+                                out[t] = adj
+                else:
+                    # Single combined Close (single ticker case)
+                    if "Close" in df.columns:
+                        for t in chunk:
+                            out[t] = df["Close"].dropna()
+                break
+            except Exception:
+                tries += 1
+                time.sleep(pause * (tries+1))
+        time.sleep(0.25)  # be gentle
     return out
 
-def classify_fresh_bullish(row: dict):
+# =========================================
+# 4) UI Header
+# =========================================
+st.markdown(
     """
-    Return (bucket_name, note, fresh_score)
-    Buckets:
-      1. ABOUT_TO_BULL   – macd below signal but curling up
-      2. JUST_CROSSED_UP – macd_prev < signal_prev and macd >= signal
-      3. STILL_BULLISH   – macd >= signal (already up)
-    """
-    macd = row["macd"]
-    sig = row["signal"]
-    hist = row["hist"]
-    macd_prev = row["macd_prev"]
-    sig_prev = row["signal_prev"]
-    hist_prev = row["hist_prev"]
+    <style>
+      h1, h2, h3 { margin-top: 0.25rem; }
+      .section-card {
+          border: 1px solid rgba(120,120,120,0.25);
+          border-radius: 16px;
+          padding: 16px 16px 6px 16px;
+          margin-bottom: 16px;
+          background: rgba(250,250,255,0.6);
+      }
+      .small-note { color: #666; font-size: 0.9rem; }
+      .good { background: rgba(0,200,0,0.07); }
+      .ok   { background: rgba(240,180,0,0.10); }
+      .warn { background: rgba(200,0,0,0.07); }
+      .tbl th { position: sticky; top: 0; background: #fff; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-    diff = macd - sig
-    diff_prev = macd_prev - sig_prev
+st.title("SilverFoxFlow — MACD Daily Scanner (Mach 6.2)")
+st.caption("Bullish-only, **from below**. Categories: About to Cross • Just Crossed • Already Crossed. Zero line ignored; focus is the cross.")
 
-    # 2) JUST CROSSED UP
-    if diff_prev < 0 and diff >= 0:
-        return ("JUST_CROSSED_UP", "MACD crossed above signal on the latest bar.", 95)
+# =========================================
+# 5) Run scan
+# =========================================
+# We’ll look back ~300 trading days to guarantee 200-EMA and MACD windows
+end_date = datetime.now(timezone.utc).date() + timedelta(days=1)  # include last bar
+start_date = end_date - timedelta(days=420)
 
-    # 1) ABOUT TO CROSS (still below, but improving)
-    #  - below signal
-    #  - closer to zero than yesterday
-    #  - histogram improving
-    if diff < 0 and diff > diff_prev and hist > hist_prev:
-        return ("ABOUT_TO_BULL", "MACD below signal but curling up / histogram rising.", 85)
+with st.status("Fetching data & scanning…", expanded=False) as status:
+    status.update(label="Downloading history (daily)…")
+    price_map = fetch_history_batch(SP500, start=start_date.isoformat(), end=end_date.isoformat(), retry=2, pause=1.0)
 
-    # 3) STILL BULLISH (already above signal, hist >= 0)
-    if diff > 0 and hist >= 0:
-        return ("STILL_BULLISH", "MACD above signal and histogram is positive.", 70)
+    about_rows = []
+    just_rows = []
+    already_rows = []
+    skipped = []
 
-    # else → neutral
-    return (None, "Does not meet bullish freshness criteria.", 0)
+    for t, series in price_map.items():
+        try:
+            close = series.copy()
+            if close.isna().sum() > 0 or len(close) < 60:
+                skipped.append((t, "insufficient data"))
+                continue
 
-def classify_fresh_bearish(row: dict):
-    macd = row["macd"]
-    sig = row["signal"]
-    hist = row["hist"]
-    macd_prev = row["macd_prev"]
-    sig_prev = row["signal_prev"]
-    hist_prev = row["hist_prev"]
+            m_line, s_line, h_line = macd(close)
+            ema200_series = ema200(close)
 
-    diff = macd - sig
-    diff_prev = macd_prev - sig_prev
+            if len(m_line.dropna()) < 35 or len(s_line.dropna()) < 35:
+                skipped.append((t, "insufficient macd length"))
+                continue
 
-    # JUST CROSSED DOWN
-    if diff_prev > 0 and diff <= 0:
-        return ("JUST_CROSSED_DOWN", "MACD just crossed down.", 95)
+            price_now = float(close.iloc[-1])
+            ema200_now = float(ema200_series.iloc[-1])
+            above_200 = price_now > ema200_now if not math.isnan(ema200_now) else False
 
-    # ABOUT TO CROSS DOWN
-    if diff > 0 and diff < diff_prev and hist < hist_prev:
-        return ("ABOUT_TO_BEAR", "MACD above signal but curling down / hist falling.", 85)
+            # Classification (exclusive, in this order)
+            if crossed_from_below(m_line, s_line, lookback_days=3):
+                cat = "Just Crossed"
+                just_rows.append({
+                    "Ticker": t,
+                    "Price": round(price_now, 2),
+                    "Above 200 EMA": "Yes" if above_200 else "No",
+                    "Days Since Cross": 0  # will recalc below
+                })
+            elif about_to_cross_from_below(m_line, s_line):
+                cat = "About to Cross"
+                about_rows.append({
+                    "Ticker": t,
+                    "Price": round(price_now, 2),
+                    "Above 200 EMA": "Yes" if above_200 else "No",
+                    "MACD Dist": round((s_line.iloc[-1] - m_line.iloc[-1]), 4)
+                })
+            elif already_crossed_bullish(m_line, s_line, min_days_ago=4, max_days_ago=20):
+                cat = "Already Crossed"
+                # Compute days since the cross:
+                # find last cross index
+                cross_idx = None
+                for i in range(len(m_line)-21, len(m_line)):
+                    if i <= 0:
+                        continue
+                    if m_line.iloc[i-1] < s_line.iloc[i-1] and m_line.iloc[i] >= s_line.iloc[i]:
+                        cross_idx = i
+                days_since = (len(m_line) - 1 - cross_idx) if cross_idx is not None else None
 
-    # STILL BEARISH
-    if diff < 0 and hist <= 0:
-        return ("STILL_BEARISH", "MACD below signal, histogram negative.", 70)
+                already_rows.append({
+                    "Ticker": t,
+                    "Price": round(price_now, 2),
+                    "Above 200 EMA": "Yes" if above_200 else "No",
+                    "Days Since Cross": days_since
+                })
+            else:
+                skipped.append((t, "no bullish-from-below setup"))
+        except Exception as e:
+            skipped.append((t, f"error: {e}"))
 
-    return (None, "Does not meet bearish freshness criteria.", 0)
+    status.update(label="Scan complete.")
 
-# ===== 4) SCAN =====
+# =========================================
+# 6) Sorting rules (LLY-style priority up top)
+#     - prioritize Above 200 EMA = Yes first, then strongest “freshness”
+# =========================================
+def sort_about(df: pd.DataFrame):
+    if df.empty: 
+        return df
+    # Smaller distance = closer to cross (better). Above 200 first.
+    return df.sort_values(by=["Above 200 EMA","MACD Dist","Ticker"], ascending=[False, True, True])
 
-bull_about = []
-bull_just = []
-bull_still = []
-bear_about = []
-bear_just = []
-bear_still = []
-neutral = []
+def sort_just(df: pd.DataFrame):
+    if df.empty:
+        return df
+    # For "Just Crossed", 'Days Since Cross' close to 0 is fresher. Above 200 first.
+    if "Days Since Cross" in df.columns and df["Days Since Cross"].notna().any():
+        return df.sort_values(by=["Above 200 EMA","Days Since Cross","Ticker"], ascending=[False, True, True])
+    # Fallback
+    return df.sort_values(by=["Above 200 EMA","Ticker"], ascending=[False, True])
 
-with st.spinner("Scanning tickers... (first run can be slow)"):
-    for ticker in SP500_TICKERS:
-        df = fetch_history(ticker, lookback_days)
-        macd_row = compute_macd_from_df(df)
-        if macd_row is None:
-            neutral.append({
-                "ticker": ticker,
-                "close": None,
-                "macd": None,
-                "signal": None,
-                "hist": None,
-                "fresh_score": 0,
-                "verdict": "NO DATA",
-                "note": "yfinance returned empty / not enough candles",
-            })
-            continue
+def sort_already(df: pd.DataFrame):
+    if df.empty:
+        return df
+    # For "Already Crossed", smaller days since cross is stronger. Above 200 first.
+    return df.sort_values(by=["Above 200 EMA","Days Since Cross","Ticker"], ascending=[False, True, True])
 
-        base = {
-            "ticker": ticker,
-            "close": round(macd_row["close"], 2),
-            "macd": round(macd_row["macd"], 4),
-            "signal": round(macd_row["signal"], 4),
-            "hist": round(macd_row["hist"], 4),
-        }
+about_df  = pd.DataFrame(about_rows,  columns=["Ticker","Price","Above 200 EMA","MACD Dist"])
+just_df   = pd.DataFrame(just_rows,   columns=["Ticker","Price","Above 200 EMA","Days Since Cross"])
+already_df= pd.DataFrame(already_rows,columns=["Ticker","Price","Above 200 EMA","Days Since Cross"])
 
-        bull_label, bull_note, bull_score = classify_fresh_bullish(macd_row)
-        bear_label, bear_note, bear_score = classify_fresh_bearish(macd_row)
+about_df   = sort_about(about_df)
+just_df    = sort_just(just_df)
+already_df = sort_already(already_df)
 
-        # PRIORITY: bullish first, then bearish, else neutral
-        if bull_label == "ABOUT_TO_BULL":
-            bull_about.append({**base, "fresh_score": bull_score, "note": bull_note, "verdict": "ABOUT TO (CALLS)"})
-        elif bull_label == "JUST_CROSSED_UP":
-            bull_just.append({**base, "fresh_score": bull_score, "note": bull_note, "verdict": "JUST CROSSED (CALLS)"})
-        elif bull_label == "STILL_BULLISH":
-            bull_still.append({**base, "fresh_score": bull_score, "note": bull_note, "verdict": "STILL BULLISH (CALLS)"})
-        elif bear_label == "ABOUT_TO_BEAR":
-            bear_about.append({**base, "fresh_score": bear_score, "note": bear_note, "verdict": "ABOUT TO (PUTS)"})
-        elif bear_label == "JUST_CROSSED_DOWN":
-            bear_just.append({**base, "fresh_score": bear_score, "note": bear_note, "verdict": "JUST CROSSED (PUTS)"})
-        elif bear_label == "STILL_BEARISH":
-            bear_still.append({**base, "fresh_score": bear_score, "note": bear_note, "verdict": "STILL BEARISH (PUTS)"})
-        else:
-            neutral.append({**base, "fresh_score": 0, "verdict": "NEUTRAL / LATE / NO TRADE", "note": "MACD not in ideal spot"})
+st.markdown("### Scan Summary")
+colA, colB, colC, colD = st.columns(4)
+colA.metric("About to Cross (Bullish)", len(about_df))
+colB.metric("Just Crossed (Bullish)", len(just_df))
+colC.metric("Already Crossed (Bullish)", len(already_df))
+colD.metric("Processed", len(price_map))
 
-# sort by fresh_score desc
-bull_about = sorted(bull_about, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
-bull_just = sorted(bull_just, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
-bull_still = sorted(bull_still, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
-bear_about = sorted(bear_about, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
-bear_just = sorted(bear_just, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
-bear_still = sorted(bear_still, key=lambda x: x["fresh_score"], reverse=True)[:max_per_section]
-neutral = sorted(neutral, key=lambda x: x["ticker"])[:max_per_section]
+with st.expander("Skipped / Not in a bullish-from-below setup (reason)", expanded=False):
+    if skipped:
+        sk = pd.DataFrame(skipped, columns=["Ticker","Reason"])
+        st.dataframe(sk, use_container_width=True, height=260)
+    else:
+        st.write("None 🎉")
 
-# ===== 5) DISPLAY =====
+# =========================
+# 7) Sections (separate tables; sticky headers)
+# =========================
+st.markdown('<div class="section-card good">', unsafe_allow_html=True)
+st.subheader("1) About to Cross (Bullish)")
+st.caption("MACD is **below** Signal, rising, and within a tight proximity band — likely to cross soon.")
+if about_df.empty:
+    st.write("No symbols detected right now.")
+else:
+    st.dataframe(about_df.reset_index(drop=True), use_container_width=True, height=min(600, 42 + 28*len(about_df)))
+st.markdown('</div>', unsafe_allow_html=True)
 
-col1, col2, col3 = st.columns(3)
+st.markdown('<div class="section-card good">', unsafe_allow_html=True)
+st.subheader("2) Just Crossed (Bullish)")
+st.caption("Crossed from **below** within last 3 trading days — freshest signals.")
+if just_df.empty:
+    st.write("No symbols detected right now.")
+else:
+    st.dataframe(just_df.reset_index(drop=True), use_container_width=True, height=min(600, 42 + 28*len(just_df)))
+st.markdown('</div>', unsafe_allow_html=True)
 
-with col1:
-    st.subheader("🟢 1. About to cross bullish (CALLS)")
-    st.dataframe(pd.DataFrame(bull_about))
+st.markdown('<div class="section-card ok">', unsafe_allow_html=True)
+st.subheader("3) Already Crossed (Bullish)")
+st.caption("Cross occurred >3 and ≤20 days ago and MACD remains above Signal — still valid trend continuation.")
+if already_df.empty:
+    st.write("No symbols detected right now.")
+else:
+    st.dataframe(already_df.reset_index(drop=True), use_container_width=True, height=min(600, 42 + 28*len(already_df)))
+st.markdown('</div>', unsafe_allow_html=True)
 
-with col2:
-    st.subheader("🟢 2. Just crossed bullish (CALLS)")
-    st.dataframe(pd.DataFrame(bull_just))
-
-with col3:
-    st.subheader("🟢 3. Still bullish (CALLS)")
-    st.dataframe(pd.DataFrame(bull_still))
-
-st.markdown("---")
-
-col4, col5, col6 = st.columns(3)
-with col4:
-    st.subheader("🔴 About to cross bearish (PUTS)")
-    st.dataframe(pd.DataFrame(bear_about))
-
-with col5:
-    st.subheader("🔴 Just crossed bearish (PUTS)")
-    st.dataframe(pd.DataFrame(bear_just))
-
-with col6:
-    st.subheader("🔴 Still bearish (PUTS)")
-    st.dataframe(pd.DataFrame(bear_still))
-
-st.markdown("---")
-st.subheader("😐 Neutral / Late / No Trade")
-st.dataframe(pd.DataFrame(neutral))
-
-st.caption(f"Last run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.markdown(
+    f"<p class='small-note'>Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} • Timeframe: Daily • Universe size: {len(SP500)} tickers</p>",
+    unsafe_allow_html=True
+)
