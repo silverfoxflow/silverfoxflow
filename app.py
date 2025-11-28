@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -784,70 +785,69 @@ else:
 
     st.markdown("---")
 
-    # ---- Verdict Cards ----
-    st.markdown("## Signal Cards (Verdicts)")
+# ---- Verdict Cards (Consolidated) ----
+st.markdown("## Signal Cards (Consolidated)")
+st.caption("Each ticker aggregated into one clean card instead of repeated rows.")
 
-    if strict_df.empty:
-        st.write("No trades to summarize. Verdict: **NO TRADE**.")
-    else:
-        for _, row in strict_df.iterrows():
-            ticker = row.get("Ticker", "")
-            direction = row.get("Direction", None)
-            verdict = verdict_for_direction(direction)
-            total_premium = row.get("Total Premium ($)", None)
-            num_trades = row.get("# Trades", None)
-            pct_otm = row.get("% OTM", None)
-            recency = row.get("Recency", None)
-            strike = row.get("Strike", None) if "Strike" in strict_df.columns else None
-            underlying = (
-                row.get("Underlying Price", None)
-                if "Underlying Price" in strict_df.columns
-                else None
-            )
-            expiration = (
-                row.get("Expiration", None)
-                if "Expiration" in strict_df.columns
-                else None
-            )
-            dte = row.get("DTE", None) if "DTE" in strict_df.columns else None
+if strict_df.empty:
+    st.write("No trades to summarize. Verdict: **NO TRADE**.")
 
-            st.markdown("---")
+else:
+    grouped = strict_df.groupby("Ticker")
 
-            title = f"### {ticker} — **{verdict}**"
-            if recency and recency.startswith("Fresh"):
-                title += " 🔥"
-            st.markdown(title)
+    for ticker, grp in grouped:
+        st.markdown("---")
 
-            details = []
-            if direction == "bullish":
-                details.append("Bias: 🟢 Institutional **bullish** flow (CALL sweeps).")
-            elif direction == "bearish":
-                details.append("Bias: 🔴 Institutional **bearish** flow (PUT sweeps).")
-            else:
-                details.append("Bias: ⚪ Mixed / unclear.")
+        # Determine direction (majority)
+        direction = grp["Direction"].mode()[0]
+        verdict = verdict_for_direction(direction)
 
-            if recency:
-                details.append(f"Recency: **{recency}**")
-            if dte is not None and not pd.isna(dte):
-                details.append(f"DTE: **{int(dte)} days**")
-            if total_premium is not None and not pd.isna(total_premium):
-                details.append(f"Total Premium: **${int(total_premium):,}**")
-            if num_trades is not None and not pd.isna(num_trades):
-                details.append(f"Trades in cluster: **{int(num_trades)}+**")
-            if strike is not None and not pd.isna(strike):
-                details.append(f"Strike: **{strike:.2f}**")
-            if underlying is not None and not pd.isna(underlying):
-                details.append(f"Underlying: **{underlying:.2f}**")
-            if expiration is not None and not pd.isna(expiration):
-                details.append(f"Expiration: **{expiration}**")
-            if pct_otm is not None and not pd.isna(pct_otm):
-                details.append(f"Approx % OTM: **{pct_otm:.2f}%**")
+        # Aggregate metrics
+        total_premium = grp["Total Premium ($)"].sum()
+        total_trades = grp["# Trades"].sum() if "# Trades" in grp.columns else len(grp)
+        avg_pct_otm = grp["% OTM"].mean() if "% OTM" in grp.columns else None
+        avg_dte = grp["DTE"].mean() if "DTE" in grp.columns else None
+        avg_strike = grp["Strike"].mean() if "Strike" in grp.columns else None
+        avg_underlying = grp["Underlying Price"].mean() if "Underlying Price" in grp.columns else None
+        common_exp = grp["Expiration"].mode()[0] if "Expiration" in grp.columns else None
+        recency_tags = grp["Recency"].dropna().unique()
 
-            st.write(" • ".join(details))
-            st.caption(
-                "Verdict is based on strict UOA 2.0 filters: sweeps-only, $150K+ premium, "
-                "volume > OI, 1–8 week expirations, clustered institutional flow, last 3 days."
-            )
+        # Title
+        title = f"### {ticker} — **{verdict}**"
+        if any(isinstance(r, str) and r.startswith("Fresh") for r in recency_tags):
+            title += " 🔥"
+        st.markdown(title)
 
-    st.markdown("---")
-    st.caption("Mach 7.4 · SilverFoxFlow · Strict UOA 2.0 · Last 3 days · Capital-protection focused.")
+        # Bias Line
+        if direction == "bullish":
+            st.write("Bias: 🟢 Institutional **bullish** flow (CALL sweeps).")
+        else:
+            st.write("Bias: 🔴 Institutional **bearish** flow (PUT sweeps).")
+
+        # Summary Lines
+        summary = []
+
+        if len(recency_tags) > 0:
+            summary.append(f"Recency: **{', '.join([str(r) for r in recency_tags])}**")
+
+        summary.append(f"Total Premium (combined): **${total_premium:,.0f}**")
+        summary.append(f"Sweeps in cluster: **{int(total_trades)}**")
+
+        if avg_dte is not None:
+            summary.append(f"Avg DTE: **{avg_dte:.1f} days**")
+        if avg_strike is not None:
+            summary.append(f"Avg Strike: **{avg_strike:.2f}**")
+        if avg_underlying is not None:
+            summary.append(f"Underlying: **{avg_underlying:.2f}**")
+        if common_exp:
+            summary.append(f"Expiration: **{common_exp}**")
+        if avg_pct_otm is not None:
+            summary.append(f"Avg % OTM: **{avg_pct_otm:.2f}%**")
+
+        st.write(" • ".join(summary))
+
+        st.caption(
+            "Strict UOA 2.0 aggregated: sweeps-only · $150K+ premium · volume>OI · 1–8wk expirations · clustered institutions · last 3 days."
+        )
+
+st.markdown("---")
