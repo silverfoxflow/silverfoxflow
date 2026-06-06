@@ -1190,32 +1190,23 @@ def render_table(df: pd.DataFrame, height=420):
 
 st.markdown(
     """
-    <div class="sf-hero">
+    <div class="sf-hero sf-hero-compact">
         <div class="sf-hero-title">🦊 SilverFoxFlow Mach 8.0</div>
-        <div class="sf-hero-sub">
-            Recovery MACD scanner built to reject bad trades first: pre-cross quality, confirmed entries, failed-cross warnings, sector rotation, and market-regime control.
-        </div>
-        <span class="sf-chip">Earth-tone dark mode</span>
-        <span class="sf-chip">TradingView ticker links</span>
-        <span class="sf-chip">Clean default tables</span>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
 with st.sidebar:
-    st.header("Mach 8.0 Controls")
+    st.header("Controls")
     mode = st.radio("Trading Mode", list(MODE_CONFIG.keys()), index=0)
-    st.caption(MODE_CONFIG[mode]["label"])
     universe_choice = st.selectbox("Tradable Universe", ["Top 100", "Top 150", "Top 200", "Full S&P 500", "Liquid Core Only"], index=1)
     table_detail = st.radio("Table Detail", ["Clean", "Full"], index=0, horizontal=True)
     include_etfs = st.checkbox("Include ETFs as tradable symbols", value=True)
     ignore_market_gate = st.checkbox("Research only: ignore hostile market gate", value=False)
     period = st.selectbox("History Period", ["6mo", "1y", "2y"], index=1)
     custom_text = st.text_area("Add custom tickers", placeholder="Example: TSM, ARM, MSTR", height=80)
-    st.caption("Earnings dates are not auto-blocked in this build. Check earnings manually before entry.")
-
-st.info("Mach 8.0 is decision support only. In Recovery Mode, pre-cross names are watchlist alerts — not automatic entries.")
+    st.caption("Earnings: check manually.")
 
 custom_tickers = []
 if custom_text.strip():
@@ -1263,17 +1254,15 @@ col2.metric("Call Trading", call_trading)
 col3.metric("Mode", mode)
 col4.metric("Scanned", len(scan_tickers))
 col5.metric("Market Score", f"{market_points} / 8")
-st.caption(f"Best action: **{best_action}**")
-
 if regime == "HOSTILE" and mode == "Recovery" and not ignore_market_gate:
-    st.error("Recovery Mode says call trading is OFF in a hostile market. Pre-cross alerts should be watched, not chased.")
+    st.error("Call trading OFF.")
 elif regime == "NEUTRAL":
-    st.warning("Neutral market: require confirmation and smaller size.")
+    st.warning("Caution: confirm first.")
 else:
-    st.success("Market gate is not blocking A/A+ candidates under current mode.")
+    st.success("Market gate open.")
 
 if scan_df.empty:
-    st.info("No scan rows were produced. Check yfinance connection, symbols, or reduce filters.")
+    st.info("No scan rows produced.")
     st.stop()
 
 pre_df = scan_df[scan_df["Bucket"] == "A+ Pre-Cross Setups"].copy()
@@ -1290,41 +1279,36 @@ s4.metric("Watch/Caution", len(watch_df))
 s5.metric("Rejected", len(rejected_df))
 
 st.markdown("---")
-st.subheader("Daily Command Center")
+st.subheader("Command Center")
 left, right = st.columns([2, 1])
 with left:
-    st.markdown("#### Best Names First")
+    st.markdown("#### Best Names")
     best_df = pd.concat([pre_df, confirmed_df], ignore_index=True).sort_values("Score", ascending=False)
     render_table(best_df.head(8), height=320)
 with right:
-    st.markdown("#### Rules for Today")
+    st.markdown("#### Rules")
     st.write(f"**Market:** {regime}")
-    st.write(f"**Call trading:** {call_trading}")
-    st.write("**Pre-cross = alert only.**")
-    st.write("**Entry requires:** trigger break + MACD cross/confirmation + market holding.")
-    st.write("**Exit requires no debate:** failed cross, loss of signal-day low, or MACD back under signal.")
-    st.write("**Options:** avoid weeklies; prefer liquid 30–60 DTE; keep loss cap fixed.")
+    st.write(f"**Calls:** {call_trading}")
+    st.write("**Entry:** trigger + confirmation")
+    st.write("**Exit:** failed cross / invalidation")
+    st.write("**Options:** liquid 30–60 DTE")
 
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["A+ Pre-Cross", "Confirmed", "Failed / Exit", "Watchlist", "Sector / Market", "Full Scan", "Exports / Journal"])
 
 with tab1:
     st.header("A+ Pre-Cross Setups")
-    st.caption("Best early alerts. These are NOT automatic buys. Wait for trigger + actual cross/confirmation.")
     render_table(pre_df, height=520)
 
 with tab2:
     st.header("Confirmed Trade Candidates")
-    st.caption("MACD crossed and price confirmed. Still use small size and invalidation rules.")
     render_table(confirmed_df, height=520)
 
 with tab3:
     st.header("Failed Cross / Exit Warnings")
-    st.caption("This section is designed to prevent ALB-style hold-and-hope traps.")
     render_table(failed_df, height=520)
 
 with tab4:
     st.header("Watchlist / Caution")
-    st.caption("Interesting but imperfect. In Recovery Mode, these should not be traded until missing filters improve.")
     render_table(watch_df.sort_values("Score", ascending=False), height=620)
 
 with tab5:
@@ -1341,7 +1325,6 @@ with tab5:
     st.subheader("Sector Rotation")
     st.dataframe(linked_display_df(sec_df), use_container_width=True, hide_index=True, column_config=linked_column_config())
     st.subheader("Tradability Ranking")
-    st.caption("Top names selected by dollar volume + liquid-options boost. This keeps the full S&P 500 list but scans the best 100–200 names first.")
     rank_display = ranked_universe.head(250).copy()
     if not rank_display.empty:
         rank_display["Avg $Vol 20D"] = rank_display["Avg $Vol 20D"].round(0).astype("int64")
@@ -1349,7 +1332,6 @@ with tab5:
 
 with tab6:
     st.header("Full Scan")
-    st.caption("Everything scanned, sorted by bucket and score. Use this for research, not impulse entries.")
     render_table(scan_df, height=720)
 
 with tab7:
@@ -1361,12 +1343,9 @@ with tab7:
     journal_cols = ["Date", "Ticker", "Grade At Entry", "Entry Type", "Option Contract", "Entry Price", "Stop Rule", "Target", "Exit Price", "Result %", "Reason Entered", "Reason Exited", "Screenshot Link", "Notes"]
     journal_template = pd.DataFrame(columns=journal_cols)
     st.download_button("Download Trade Journal Template CSV", make_download(journal_template), "silverfoxflow_trade_journal_template.csv", "text/csv")
-    st.markdown("#### Non-negotiable Recovery Rules")
-    st.write("1. A+ Pre-Cross is only a watchlist alert.")
-    st.write("2. No entry if market regime is HOSTILE in Recovery Mode.")
-    st.write("3. No entry before earnings unless that is the specific plan.")
-    st.write("4. Exit if MACD falls back under signal after entry or price closes below signal-day low.")
-    st.write("5. Options loss cap must be set before entry, not after pain starts.")
-
-st.markdown("---")
-st.caption("SilverFoxFlow Mach 8.0 · MACD(12,26,9) · Recovery Mode default · built to reject bad trades first.")
+    with st.expander("Rules", expanded=False):
+        st.write("1. A+ Pre-Cross = watchlist only.")
+        st.write("2. No calls when Recovery Mode + HOSTILE market.")
+        st.write("3. Check earnings before entry.")
+        st.write("4. Exit on failed cross or invalidation.")
+        st.write("5. Set option loss cap before entry.")
