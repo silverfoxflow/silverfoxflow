@@ -10,6 +10,175 @@ import yfinance as yf
 
 st.set_page_config(page_title="SilverFoxFlow Mach 8.0", page_icon="🦊", layout="wide")
 
+
+# ============================================================
+# VISUAL THEME — dark nature / earth tones
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    :root {
+        --sf-bg: #111812;
+        --sf-bg-2: #172118;
+        --sf-panel: rgba(31, 45, 32, 0.92);
+        --sf-panel-2: rgba(39, 55, 39, 0.88);
+        --sf-border: rgba(196, 143, 84, 0.28);
+        --sf-text: #f3ead7;
+        --sf-muted: #b9c0a8;
+        --sf-sage: #93a47d;
+        --sf-moss: #60704f;
+        --sf-copper: #c88f55;
+        --sf-amber: #e0b06e;
+        --sf-danger: #cf7d65;
+    }
+
+    .stApp {
+        background:
+            radial-gradient(circle at 15% 5%, rgba(120, 91, 55, 0.24), transparent 32%),
+            radial-gradient(circle at 85% 12%, rgba(77, 103, 75, 0.25), transparent 30%),
+            linear-gradient(135deg, #0f1711 0%, #172119 45%, #211a13 100%);
+        color: var(--sf-text);
+    }
+
+    .block-container {
+        padding-top: 1.35rem;
+        padding-bottom: 2rem;
+        max-width: 1500px;
+    }
+
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #141e15 0%, #201a12 100%);
+        border-right: 1px solid var(--sf-border);
+    }
+
+    [data-testid="stSidebar"] * {
+        color: var(--sf-text);
+    }
+
+    h1, h2, h3, h4 {
+        color: var(--sf-text) !important;
+        letter-spacing: 0.01em;
+    }
+
+    p, label, span, div {
+        color: inherit;
+    }
+
+    .stCaption, [data-testid="stCaptionContainer"] {
+        color: var(--sf-muted) !important;
+    }
+
+    [data-testid="stMetric"] {
+        background: linear-gradient(145deg, rgba(36, 53, 37, 0.95), rgba(31, 39, 27, 0.92));
+        border: 1px solid var(--sf-border);
+        border-radius: 18px;
+        padding: 14px 16px;
+        box-shadow: 0 10px 28px rgba(0,0,0,0.22);
+    }
+
+    [data-testid="stMetricLabel"] p {
+        color: var(--sf-muted) !important;
+        font-size: 0.82rem;
+    }
+
+    [data-testid="stMetricValue"] {
+        color: var(--sf-amber) !important;
+    }
+
+    div[data-testid="stAlert"] {
+        border-radius: 16px;
+        border: 1px solid var(--sf-border);
+        background: rgba(36, 48, 33, 0.72);
+    }
+
+    .stButton > button, .stDownloadButton > button {
+        border-radius: 14px;
+        border: 1px solid rgba(224, 176, 110, 0.45);
+        background: linear-gradient(135deg, #765335, #42563a);
+        color: #fff7e8;
+        font-weight: 700;
+        box-shadow: 0 10px 24px rgba(0,0,0,0.22);
+    }
+
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        border-color: var(--sf-amber);
+        filter: brightness(1.08);
+    }
+
+    div[data-testid="stTabs"] button {
+        color: var(--sf-muted) !important;
+        border-radius: 999px;
+        padding: 0.35rem 0.9rem;
+    }
+
+    div[data-testid="stTabs"] button[aria-selected="true"] {
+        background: rgba(200, 143, 85, 0.18);
+        color: var(--sf-amber) !important;
+        border: 1px solid rgba(200, 143, 85, 0.35);
+    }
+
+    [data-testid="stDataFrame"] {
+        border: 1px solid var(--sf-border);
+        border-radius: 18px;
+        overflow: hidden;
+        background: rgba(20, 30, 21, 0.78);
+        box-shadow: 0 12px 30px rgba(0,0,0,0.22);
+    }
+
+    a {
+        color: #e0b06e !important;
+        font-weight: 750;
+        text-decoration: none;
+    }
+
+    a:hover {
+        color: #f0c98e !important;
+        text-decoration: underline;
+    }
+
+    hr {
+        border-color: rgba(196, 143, 84, 0.22);
+    }
+
+    .sf-hero {
+        background: linear-gradient(135deg, rgba(45, 64, 43, 0.94), rgba(44, 32, 21, 0.92));
+        border: 1px solid var(--sf-border);
+        border-radius: 24px;
+        padding: 24px 26px;
+        box-shadow: 0 18px 44px rgba(0,0,0,0.28);
+        margin-bottom: 18px;
+    }
+
+    .sf-hero-title {
+        font-size: 2.05rem;
+        font-weight: 900;
+        color: var(--sf-text);
+        margin-bottom: 4px;
+    }
+
+    .sf-hero-sub {
+        color: var(--sf-muted);
+        font-size: 1.02rem;
+        line-height: 1.45;
+    }
+
+    .sf-chip {
+        display: inline-block;
+        padding: 6px 10px;
+        border: 1px solid rgba(224, 176, 110, 0.32);
+        border-radius: 999px;
+        color: #f3ead7;
+        background: rgba(147, 164, 125, 0.12);
+        margin-right: 7px;
+        margin-top: 10px;
+        font-size: 0.83rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # ============================================================
 # UNIVERSE
 # ============================================================
@@ -557,10 +726,17 @@ MODE_CONFIG = {
     },
 }
 
-DISPLAY_COLUMNS = [
+CLEAN_COLUMNS = [
     "Grade", "Ticker", "Sector", "Price", "MACD Status", "Score", "Cross Proximity %",
-    "Hist Trend", "RS vs SPY 20D", "Stock vs Sector 20D", "Sector State", "Above 50SMA",
-    "Above 200EMA", "Vol Ratio", "Trigger", "Invalidation", "Risk Flags", "Action", "Chart",
+    "Hist Trend", "Sector State", "Risk Flags", "Trigger", "Invalidation", "Action",
+]
+
+FULL_COLUMNS = [
+    "Grade", "Ticker", "Sector", "Sector ETF", "Price", "MACD Status", "Score", "Cross Proximity %",
+    "Hist Trend", "Bars Since Cross", "RS vs SPY 20D", "RS vs QQQ 20D", "Stock vs Sector 20D",
+    "Sector State", "Sector RS vs SPY 20D", "Above 20SMA", "Above 50SMA", "Above 200EMA",
+    "Vol Ratio", "20D Return %", "63D Return %", "% From 52W High", "Options Proxy",
+    "Risk Flags", "Trigger", "Invalidation", "Action",
 ]
 
 # ============================================================
@@ -573,6 +749,11 @@ def yf_symbol(ticker: str) -> str:
 
 def tv_symbol(ticker: str) -> str:
     return ticker.replace(".", "-").upper().strip()
+
+
+def tv_chart_url(ticker: str) -> str:
+    """TradingView chart URL. The ticker text is extracted by Streamlit LinkColumn display_text regex."""
+    return f"https://www.tradingview.com/chart/?symbol={tv_symbol(ticker)}"
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 20)
@@ -958,7 +1139,7 @@ def analyze_ticker(ticker: str, data_map: dict, market_regime: str, mode: str, i
         "% From 52W High": round(pct_from_52w_high * 100, 2) if not pd.isna(pct_from_52w_high) else np.nan,
         "Options Proxy": liquid_reason, "Trigger": trigger, "Invalidation": invalidation,
         "Risk Flags": ", ".join(flags[:5]) if flags else "Clean", "Action": action,
-        "Chart": f"https://www.tradingview.com/symbols/{tv_symbol(ticker)}/",
+        "Chart": tv_chart_url(ticker),
     }
 
 
@@ -966,38 +1147,75 @@ def make_download(df: pd.DataFrame):
     return df.to_csv(index=False).encode("utf-8")
 
 
+def linked_display_df(df: pd.DataFrame, columns: list | None = None) -> pd.DataFrame:
+    """Return a display copy where ticker-like columns become TradingView links."""
+    if columns is not None:
+        out = df[[c for c in columns if c in df.columns]].copy()
+    else:
+        out = df.copy()
+    for col in ["Ticker", "ETF", "Sector ETF"]:
+        if col in out.columns:
+            out[col] = out[col].astype(str).apply(tv_chart_url)
+    return out
+
+
+def linked_column_config(extra=None):
+    cfg = {
+        "Ticker": st.column_config.LinkColumn("Ticker", display_text=r"symbol=([^&]+)", width="small"),
+        "ETF": st.column_config.LinkColumn("ETF", display_text=r"symbol=([^&]+)", width="small"),
+        "Sector ETF": st.column_config.LinkColumn("Sector ETF", display_text=r"symbol=([^&]+)", width="small"),
+        "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100),
+    }
+    if extra:
+        cfg.update(extra)
+    return cfg
+
+
 def render_table(df: pd.DataFrame, height=420):
     if df.empty:
         st.info("Nothing in this section under current filters.")
         return
-    columns = [c for c in DISPLAY_COLUMNS if c in df.columns]
+    detail = globals().get("table_detail", "Clean")
+    base_cols = FULL_COLUMNS if detail == "Full" else CLEAN_COLUMNS
+    columns = [c for c in base_cols if c in df.columns]
+    display_df = linked_display_df(df, columns)
     st.dataframe(
-        df[columns], use_container_width=True, hide_index=True, height=height,
-        column_config={
-            "Chart": st.column_config.LinkColumn("Chart", display_text="Open"),
-            "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100),
-        },
+        display_df, use_container_width=True, hide_index=True, height=height,
+        column_config=linked_column_config(),
     )
 
 # ============================================================
 # UI
 # ============================================================
 
-st.title("🦊 SilverFoxFlow Mach 8.0")
-st.caption("Recovery MACD scanner: pre-cross quality, confirmed entries, failed-cross warnings, sector rotation, and market-regime control.")
+st.markdown(
+    """
+    <div class="sf-hero">
+        <div class="sf-hero-title">🦊 SilverFoxFlow Mach 8.0</div>
+        <div class="sf-hero-sub">
+            Recovery MACD scanner built to reject bad trades first: pre-cross quality, confirmed entries, failed-cross warnings, sector rotation, and market-regime control.
+        </div>
+        <span class="sf-chip">Earth-tone dark mode</span>
+        <span class="sf-chip">TradingView ticker links</span>
+        <span class="sf-chip">Clean default tables</span>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 with st.sidebar:
     st.header("Mach 8.0 Controls")
     mode = st.radio("Trading Mode", list(MODE_CONFIG.keys()), index=0)
     st.caption(MODE_CONFIG[mode]["label"])
     universe_choice = st.selectbox("Tradable Universe", ["Top 100", "Top 150", "Top 200", "Full S&P 500", "Liquid Core Only"], index=1)
+    table_detail = st.radio("Table Detail", ["Clean", "Full"], index=0, horizontal=True)
     include_etfs = st.checkbox("Include ETFs as tradable symbols", value=True)
     ignore_market_gate = st.checkbox("Research only: ignore hostile market gate", value=False)
     period = st.selectbox("History Period", ["6mo", "1y", "2y"], index=1)
     custom_text = st.text_area("Add custom tickers", placeholder="Example: TSM, ARM, MSTR", height=80)
     st.caption("Earnings dates are not auto-blocked in this build. Check earnings manually before entry.")
 
-st.warning("Mach 8.0 is a decision-support scanner, not a buy/sell guarantee. In Recovery Mode, pre-cross names are watchlist alerts, not automatic entries.")
+st.info("Mach 8.0 is decision support only. In Recovery Mode, pre-cross names are watchlist alerts — not automatic entries.")
 
 custom_tickers = []
 if custom_text.strip():
@@ -1077,7 +1295,7 @@ left, right = st.columns([2, 1])
 with left:
     st.markdown("#### Best Names First")
     best_df = pd.concat([pre_df, confirmed_df], ignore_index=True).sort_values("Score", ascending=False)
-    render_table(best_df.head(12), height=360)
+    render_table(best_df.head(8), height=320)
 with right:
     st.markdown("#### Rules for Today")
     st.write(f"**Market:** {regime}")
@@ -1112,7 +1330,7 @@ with tab4:
 with tab5:
     st.header("Sector Leadership + Market Regime")
     st.subheader("Market ETFs")
-    st.dataframe(market_df, use_container_width=True, hide_index=True)
+    st.dataframe(linked_display_df(market_df), use_container_width=True, hide_index=True, column_config=linked_column_config())
     sec_rows = []
     for sec, etf in SECTOR_TO_ETF.items():
         if sec in ["ETF", "Other"]:
@@ -1121,13 +1339,13 @@ with tab5:
         sec_rows.append({"Sector": sec, "ETF": etf, "State": state, "RS vs SPY 20D %": round(rs * 100, 2) if not pd.isna(rs) else np.nan})
     sec_df = pd.DataFrame(sec_rows).sort_values("RS vs SPY 20D %", ascending=False, na_position="last")
     st.subheader("Sector Rotation")
-    st.dataframe(sec_df, use_container_width=True, hide_index=True)
+    st.dataframe(linked_display_df(sec_df), use_container_width=True, hide_index=True, column_config=linked_column_config())
     st.subheader("Tradability Ranking")
     st.caption("Top names selected by dollar volume + liquid-options boost. This keeps the full S&P 500 list but scans the best 100–200 names first.")
     rank_display = ranked_universe.head(250).copy()
     if not rank_display.empty:
         rank_display["Avg $Vol 20D"] = rank_display["Avg $Vol 20D"].round(0).astype("int64")
-    st.dataframe(rank_display, use_container_width=True, hide_index=True, height=520)
+    st.dataframe(linked_display_df(rank_display), use_container_width=True, hide_index=True, height=520, column_config=linked_column_config())
 
 with tab6:
     st.header("Full Scan")
