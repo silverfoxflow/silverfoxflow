@@ -1,4 +1,4 @@
-# SilverFoxFlow Mach 8.0 — Recovery MACD Scanner
+# SilverFoxFlow Mach 8.1 — Balanced Lifecycle MACD Scanner
 # Run: streamlit run app.py
 # Purpose: fewer trades, stronger setups, faster failed-cross warnings.
 
@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-st.set_page_config(page_title="SilverFoxFlow Mach 8.0", page_icon="🦊", layout="wide")
+st.set_page_config(page_title="SilverFoxFlow Mach 8.1", page_icon="🦊", layout="wide")
 
 
 # ============================================================
@@ -710,33 +710,55 @@ SECTOR_TO_ETF = {
 
 MODE_CONFIG = {
     "Recovery": {
-        "label": "Strict. Capital-protection first.",
-        "min_proximity": 70, "min_volume_ratio": 0.80, "min_rs_spy_20": 0.00,
-        "min_stock_vs_sector_20": 0.00, "allow_hostile_market": False, "max_recent_cross_bars": 5,
+        "label": "Strict.",
+        "min_volume_ratio": 0.80,
+        "min_rs_spy_20": 0.00,
+        "min_stock_vs_sector_20": 0.00,
+        "allow_hostile_market": False,
+        "fresh_cross_bars": 2,
+        "late_cross_bars": 10,
+        "max_extension_pct": 3.5,
     },
-    "Normal": {
-        "label": "Balanced. Still confirmation-based.",
-        "min_proximity": 60, "min_volume_ratio": 0.70, "min_rs_spy_20": -0.01,
-        "min_stock_vs_sector_20": -0.01, "allow_hostile_market": False, "max_recent_cross_bars": 6,
+    "Balanced": {
+        "label": "Daily default.",
+        "min_volume_ratio": 0.70,
+        "min_rs_spy_20": -0.01,
+        "min_stock_vs_sector_20": -0.01,
+        "allow_hostile_market": False,
+        "fresh_cross_bars": 3,
+        "late_cross_bars": 12,
+        "max_extension_pct": 5.0,
     },
     "Aggressive": {
-        "label": "More alerts, more fakeout risk.",
-        "min_proximity": 50, "min_volume_ratio": 0.60, "min_rs_spy_20": -0.03,
-        "min_stock_vs_sector_20": -0.03, "allow_hostile_market": True, "max_recent_cross_bars": 8,
+        "label": "More alerts.",
+        "min_volume_ratio": 0.60,
+        "min_rs_spy_20": -0.03,
+        "min_stock_vs_sector_20": -0.03,
+        "allow_hostile_market": True,
+        "fresh_cross_bars": 4,
+        "late_cross_bars": 15,
+        "max_extension_pct": 7.0,
     },
 }
 
+PRE_CROSS_CONFIG = {
+    "Strict": {"min_proximity": 70, "hist_streak": 3},
+    "Balanced": {"min_proximity": 55, "hist_streak": 2},
+    "Early": {"min_proximity": 40, "hist_streak": 1},
+}
+
 CLEAN_COLUMNS = [
-    "Grade", "Ticker", "Sector", "Price", "MACD Status", "Score", "Cross Proximity %",
-    "Hist Trend", "Sector State", "Risk Flags", "Trigger", "Invalidation", "Action",
+    "Lifecycle", "Grade", "Ticker", "Sector", "Price", "MACD Status", "Age",
+    "Score", "Cross Proximity %", "Hist Trend", "Risk Flags", "Trigger", "Invalidation", "Action",
 ]
 
 FULL_COLUMNS = [
-    "Grade", "Ticker", "Sector", "Sector ETF", "Price", "MACD Status", "Score", "Cross Proximity %",
-    "Hist Trend", "Bars Since Cross", "RS vs SPY 20D", "RS vs QQQ 20D", "Stock vs Sector 20D",
+    "Lifecycle", "Grade", "Ticker", "Sector", "Sector ETF", "Price", "MACD Status", "Age", "Data",
+    "Score", "Cross Proximity %", "Hist Trend", "Bars Since Cross", "Extension %",
+    "RS vs SPY 20D", "RS vs QQQ 20D", "Stock vs Sector 20D",
     "Sector State", "Sector RS vs SPY 20D", "Above 20SMA", "Above 50SMA", "Above 200EMA",
     "Vol Ratio", "20D Return %", "63D Return %", "% From 52W High", "Options Proxy",
-    "Risk Flags", "Trigger", "Invalidation", "Action",
+    "Why", "Risk Flags", "Trigger", "Invalidation", "Action",
 ]
 
 # ============================================================
@@ -756,7 +778,7 @@ def tv_chart_url(ticker: str) -> str:
     return f"https://www.tradingview.com/chart/?symbol={tv_symbol(ticker)}"
 
 
-@st.cache_data(show_spinner=False, ttl=60 * 20)
+@st.cache_data(show_spinner=False, ttl=60 * 5)
 def download_history(tickers, period="1y", interval="1d", batch_size=50):
     clean = []
     seen = set()
@@ -793,6 +815,112 @@ def download_history(tickers, period="1y", interval="1d", batch_size=50):
                 all_data[symbol_to_ticker.get(sym, sym)] = sub
     return all_data
 
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 5)
+def download_intraday_latest(tickers, period="5d", interval="15m", batch_size=45):
+    clean, seen = [], set()
+    for t in tickers:
+        t = str(t).upper().strip()
+        if t and t not in seen:
+            clean.append(t)
+            seen.add(t)
+
+    symbol_to_ticker = {yf_symbol(t): t for t in clean}
+    latest = {}
+
+    for i in range(0, len(clean), batch_size):
+        batch_tickers = clean[i:i + batch_size]
+        batch_symbols = [yf_symbol(t) for t in batch_tickers]
+        try:
+            df = yf.download(
+                batch_symbols, period=period, interval=interval, auto_adjust=False,
+                progress=False, group_by="ticker", threads=True,
+            )
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+
+        if isinstance(df.columns, pd.MultiIndex):
+            top = list(df.columns.get_level_values(0).unique())
+            items = [(sym, df[sym]) for sym in batch_symbols if sym in top]
+        else:
+            items = [(batch_symbols[0], df)]
+
+        for sym, sub in items:
+            sub = sub.dropna(how="all")
+            if sub.empty or "Close" not in sub.columns:
+                continue
+            sub = sub.dropna(subset=["Close"])
+            if sub.empty:
+                continue
+            last_ts = sub.index[-1]
+            last_day = pd.Timestamp(last_ts).date()
+            day_df = sub[[c for c in ["High", "Low", "Close", "Volume"] if c in sub.columns]]
+            day_df = day_df[[pd.Timestamp(x).date() == last_day for x in day_df.index]]
+            if day_df.empty:
+                continue
+            t = symbol_to_ticker.get(sym, sym)
+            latest[t] = {
+                "Timestamp": pd.Timestamp(last_ts),
+                "Close": float(day_df["Close"].iloc[-1]),
+                "High": float(day_df["High"].max()) if "High" in day_df.columns else float(day_df["Close"].iloc[-1]),
+                "Low": float(day_df["Low"].min()) if "Low" in day_df.columns else float(day_df["Close"].iloc[-1]),
+                "Volume": float(day_df["Volume"].sum()) if "Volume" in day_df.columns else np.nan,
+            }
+    return latest
+
+
+def overlay_intraday_on_daily(history: dict, intraday_latest: dict) -> dict:
+    if not intraday_latest:
+        return history
+    out = dict(history)
+    for ticker, live in intraday_latest.items():
+        df = out.get(ticker)
+        if df is None or df.empty:
+            continue
+        df = df.copy()
+        live_ts = pd.Timestamp(live["Timestamp"])
+        live_date = live_ts.date()
+        last_idx = df.index[-1]
+        last_date = pd.Timestamp(last_idx).date()
+        if live_date < last_date:
+            continue
+        if live_date == last_date:
+            idx = last_idx
+        else:
+            idx = pd.Timestamp(live_date)
+            df.loc[idx] = df.iloc[-1]
+        for col in ["Close", "High", "Low", "Volume"]:
+            if col not in df.columns:
+                df[col] = np.nan
+        old_high = pd.to_numeric(df.loc[[idx], "High"], errors="coerce").iloc[0]
+        old_low = pd.to_numeric(df.loc[[idx], "Low"], errors="coerce").iloc[0]
+        old_vol = pd.to_numeric(df.loc[[idx], "Volume"], errors="coerce").iloc[0]
+        df.loc[idx, "Close"] = live.get("Close", df.loc[idx, "Close"])
+        df.loc[idx, "High"] = max(float(old_high) if not pd.isna(old_high) else live["High"], live["High"])
+        df.loc[idx, "Low"] = min(float(old_low) if not pd.isna(old_low) else live["Low"], live["Low"])
+        df.loc[idx, "Volume"] = max(float(old_vol) if not pd.isna(old_vol) else 0.0, live.get("Volume", 0.0))
+        out[ticker] = df.sort_index()
+    return out
+
+
+def latest_data_label(history: dict, intraday_latest: dict | None = None) -> str:
+    stamps = []
+    for df in history.values():
+        if df is not None and not df.empty:
+            stamps.append(pd.Timestamp(df.index[-1]))
+    for live in (intraday_latest or {}).values():
+        if live and "Timestamp" in live:
+            stamps.append(pd.Timestamp(live["Timestamp"]))
+    if not stamps:
+        return "No data"
+    ts = max(stamps)
+    try:
+        return ts.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return str(ts)
 
 def get_series(df: pd.DataFrame, col: str) -> pd.Series:
     if df is None or df.empty or col not in df.columns:
@@ -976,8 +1104,17 @@ def rank_universe(data_map: dict, candidates: list, include_etfs=True):
     return pd.DataFrame(rows).sort_values("Tradability Score", ascending=False).reset_index(drop=True)
 
 
-def analyze_ticker(ticker: str, data_map: dict, market_regime: str, mode: str, ignore_market_gate=False):
+def analyze_ticker(
+    ticker: str,
+    data_map: dict,
+    market_regime: str,
+    mode: str,
+    ignore_market_gate=False,
+    pre_sensitivity="Balanced",
+    provisional_live=False,
+):
     cfg = MODE_CONFIG[mode]
+    pcfg = PRE_CROSS_CONFIG.get(pre_sensitivity, PRE_CROSS_CONFIG["Balanced"])
     df = data_map.get(ticker)
     close = get_series(df, "Close")
     high = get_series(df, "High")
@@ -1013,29 +1150,52 @@ def analyze_ticker(ticker: str, data_map: dict, market_regime: str, mode: str, i
 
     hist_label, hist_count = consecutive_hist_trend(hist)
     proximity = cross_proximity(macd_curr, sig_curr, hist)
-    cross_info = last_bull_cross_info(macd, sig, high, low, lookback=80)
+    cross_info = last_bull_cross_info(macd, sig, high, low, lookback=100)
     bars_since_cross = cross_info["bars_since"] if cross_info else None
     cross_day_high = cross_info["high"] if cross_info else np.nan
     cross_day_low = cross_info["low"] if cross_info else np.nan
+    age = "—" if bars_since_cross is None else f"{bars_since_cross} bars"
 
     crossed_today = macd_prev <= sig_prev and macd_curr > sig_curr
-    recently_crossed = cross_info is not None and bars_since_cross <= cfg["max_recent_cross_bars"]
+    active_cross = cross_info is not None and macd_curr > sig_curr
+    fresh_confirmed_age = active_cross and bars_since_cross is not None and 1 <= bars_since_cross <= cfg["fresh_cross_bars"]
+    late_confirmed_age = active_cross and bars_since_cross is not None and cfg["fresh_cross_bars"] < bars_since_cross <= cfg["late_cross_bars"]
+
+    extension_pct = np.nan
+    if cross_info and not pd.isna(cross_day_high) and cross_day_high > 0:
+        extension_pct = (price / cross_day_high - 1.0) * 100
+    extended = active_cross and not pd.isna(extension_pct) and extension_pct > cfg["max_extension_pct"]
+
     about_to_cross = (
-        macd_curr < sig_curr and hist_curr < 0 and hist_count >= 2
-        and macd_curr > macd_prev and proximity >= cfg["min_proximity"]
+        macd_curr < sig_curr
+        and hist_curr < 0
+        and hist_count >= pcfg["hist_streak"]
+        and macd_curr > macd_prev
+        and proximity >= pcfg["min_proximity"]
     )
+    early_curl = (
+        macd_curr < sig_curr
+        and hist_curr < 0
+        and hist_count >= 1
+        and macd_curr > macd_prev
+        and proximity >= max(25, pcfg["min_proximity"] - 20)
+    )
+    provisional_cross = crossed_today and macd_curr > sig_curr
     confirmed = (
-        recently_crossed and bars_since_cross is not None and bars_since_cross >= 1
-        and macd_curr > sig_curr and price > cross_day_high and price > prev_close
+        fresh_confirmed_age
+        and price > cross_day_high
+        and price > prev_close
         and (pd.isna(vol_ratio) or vol_ratio >= cfg["min_volume_ratio"])
     )
-    failed_cross = (
-        recently_crossed and (
-            macd_curr < sig_curr or hist_curr < 0
-            or (not pd.isna(cross_day_low) and price < cross_day_low)
-            or (not pd.isna(sma50) and price < sma50)
-        )
+
+    # Hard failure only when the cross actually rolls over or price loses the signal low.
+    # Being below the 50SMA is a risk flag, not an automatic failed-cross.
+    recent_window = cross_info is not None and bars_since_cross is not None and bars_since_cross <= cfg["late_cross_bars"]
+    hard_failed = recent_window and (
+        (macd_curr < sig_curr and hist_curr < 0 and hist_count <= 0)
+        or (not pd.isna(cross_day_low) and price < cross_day_low)
     )
+    recovering = recent_window and not active_cross and not hard_failed and hist_count >= 2 and proximity >= 45
 
     spy_close = get_series(data_map.get("SPY", pd.DataFrame()), "Close")
     qqq_close = get_series(data_map.get("QQQ", pd.DataFrame()), "Close")
@@ -1061,8 +1221,8 @@ def analyze_ticker(ticker: str, data_map: dict, market_regime: str, mode: str, i
     volume_ok = pd.isna(vol_ratio) or vol_ratio >= cfg["min_volume_ratio"]
 
     score = 0
-    score += 20 if trend_ok else 0
-    score += 25 if confirmed else 20 if about_to_cross else 10 if crossed_today or recently_crossed else 0
+    score += 20 if trend_ok else 8 if above200 else 0
+    score += 25 if confirmed else 22 if about_to_cross else 18 if provisional_cross else 12 if active_cross else 8 if early_curl else 0
     score += 15 if (not pd.isna(rs_spy_20) and rs_spy_20 > 0) else 5 if rs_ok else 0
     score += 10 if (not pd.isna(stock_vs_sector_20) and stock_vs_sector_20 > 0) else 5 if stock_vs_sector_ok else 0
     score += 10 if sec_state == "Strong" else 6 if sec_state == "Neutral" else 2 if sec_state == "Unknown" else 0
@@ -1071,34 +1231,73 @@ def analyze_ticker(ticker: str, data_map: dict, market_regime: str, mode: str, i
     score += 5 if market_ok else 0
     if not pd.isna(pct_from_52w_high) and pct_from_52w_high >= -0.25:
         score += 5
-    if failed_cross:
-        score = 0
+    if hard_failed:
+        score = min(score, 18)
+    if extended:
+        score = min(score, 72)
     score = int(max(0, min(100, round(score))))
 
     strict_good = all([market_ok, trend_ok, rs_ok, stock_vs_sector_ok, sector_ok, liquid_ok, volume_ok])
-    if failed_cross:
-        grade, bucket, action, macd_status = "F Failed Cross", "Failed / Exit Warnings", "EXIT / AVOID — bullish setup failed. No averaging down.", f"Failed cross ({bars_since_cross} bars ago)"
-    elif confirmed and strict_good:
-        grade, bucket, action, macd_status = "A Confirmed", "Confirmed Trade Candidates", "TRADE CANDIDATE — only with small size and hard invalidation.", f"Confirmed cross ({bars_since_cross} bars ago)"
-    elif confirmed:
-        grade, bucket, action, macd_status = "B Confirmed Caution", "Watchlist / Caution", "WATCH ONLY — confirmation exists but quality filters are not clean.", f"Confirmed but imperfect ({bars_since_cross} bars ago)"
+
+    if hard_failed:
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "Failed", "F Failed Cross", "Failed / Exit Warnings",
+            "EXIT / AVOID", f"Failed cross ({bars_since_cross} bars ago)", "Cross rolled over or lost signal low."
+        )
+    elif provisional_cross:
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "Provisional", "P Provisional Cross", "Provisional / Near Close",
+            "WATCH NEAR CLOSE", "Provisional cross", "Live/daily candle is not final."
+        )
+    elif confirmed and strict_good and not extended:
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "Fresh", "A Fresh Confirmed", "Confirmed Trade Candidates",
+            "TRADE CANDIDATE", f"Fresh confirmed ({bars_since_cross} bars)", "Fresh cross with quality filters."
+        )
+    elif confirmed and not extended:
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "Fresh Caution", "B Confirmed Caution", "Watchlist / Caution",
+            "WATCH ONLY", f"Confirmed but imperfect ({bars_since_cross} bars)", "Confirmed, but filters are not clean."
+        )
+    elif late_confirmed_age or (active_cross and extended):
+        late_label = "Extended" if extended else "Late"
+        lifecycle, grade, bucket, action, macd_status, why = (
+            late_label, "B Late Confirmed", "Late / Learning",
+            "NO CHASE", f"Late confirmed ({bars_since_cross} bars)", "Was better earlier; wait for pullback/retest."
+        )
     elif about_to_cross and strict_good and score >= 75:
-        grade, bucket, action, macd_status = "A+ Pre-Cross", "A+ Pre-Cross Setups", "WATCH — buy only after trigger + actual MACD cross + market holds.", "About to cross"
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "Pre-Cross", "A+ Pre-Cross", "A+ Pre-Cross Setups",
+            "WATCH TRIGGER", "About to cross", "Strong curl before the cross."
+        )
     elif about_to_cross and trend_ok and liquid_ok:
-        grade, bucket, action, macd_status = "A Watch", "Watchlist / Caution", "WATCH — close, but needs missing filters to clean up.", "About to cross, imperfect"
-    elif about_to_cross:
-        grade, bucket, action, macd_status = "B Early", "Watchlist / Caution", "EARLY ONLY — not tradable yet.", "Early curl"
-    elif crossed_today:
-        grade, bucket, action, macd_status = "B Fresh Cross", "Watchlist / Caution", "DO NOT CHASE — wait for next-day confirmation above signal-day high.", "Crossed today"
-    elif recently_crossed:
-        grade, bucket, action, macd_status = "C Unconfirmed Cross", "Rejected / Full Scan", "NO TRADE — crossed but not confirmed.", f"Unconfirmed cross ({bars_since_cross} bars ago)"
-    elif macd_curr > sig_curr:
-        grade, bucket, action, macd_status = "C Already Crossed", "Rejected / Full Scan", "NO NEW ENTRY — move already underway.", "Already crossed"
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "Pre-Cross", "A Watch", "Watchlist / Caution",
+            "WATCH", "About to cross, imperfect", "Close, but needs filters to clean up."
+        )
+    elif early_curl:
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "Early Curl", "B Early Curl", "Watchlist / Caution",
+            "EARLY ONLY", "Early curl", "Developing, not ready."
+        )
+    elif recovering:
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "Recovering", "R Recovering", "Watchlist / Caution",
+            "WATCH", "Recovering from failed cross", "Improving, but no clean cross yet."
+        )
+    elif active_cross:
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "Old Cross", "C Already Crossed", "Rejected / Full Scan",
+            "NO NEW ENTRY", "Already crossed", "Move is not fresh."
+        )
     else:
-        grade, bucket, action, macd_status = "C No Setup", "Rejected / Full Scan", "NO TRADE.", "No clean bullish setup"
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "No Setup", "C No Setup", "Rejected / Full Scan",
+            "NO TRADE", "No clean bullish setup", "No setup."
+        )
 
     flags = []
-    if failed_cross: flags.append("FAILED CROSS")
+    if hard_failed: flags.append("FAILED CROSS")
     if not market_ok: flags.append("Market hostile")
     if sec_state == "Weak": flags.append("Weak sector")
     if not above50: flags.append("Below 50SMA")
@@ -1107,26 +1306,31 @@ def analyze_ticker(ticker: str, data_map: dict, market_regime: str, mode: str, i
     if not stock_vs_sector_ok: flags.append("Lagging sector")
     if not volume_ok: flags.append("Weak volume")
     if not liquid_ok: flags.append(liquid_reason)
+    if extended: flags.append("Extended")
     if not pd.isna(pct_from_52w_high) and pct_from_52w_high < -0.30: flags.append("Far from 52W high")
 
-    if grade.startswith("A+"):
-        trigger = f"Break > prior high {prior_high:.2f} + MACD cross"
-        invalidation = f"Close < prior low {prior_low:.2f} or lose 50SMA"
-    elif grade.startswith("A Confirmed") or grade.startswith("B Confirmed"):
+    if lifecycle == "Pre-Cross":
+        trigger = f"> prior high {prior_high:.2f} + cross"
+        invalidation = f"< prior low {prior_low:.2f}"
+    elif lifecycle in ["Fresh", "Fresh Caution"]:
         trigger = f"Hold > cross high {cross_day_high:.2f}"
-        invalidation = f"Close < cross low {cross_day_low:.2f} or MACD fails"
-    elif crossed_today:
-        trigger = f"Wait: next close > signal-day high {float(high.iloc[-1]):.2f}"
-        invalidation = f"Close < signal-day low {float(low.iloc[-1]):.2f}"
+        invalidation = f"< cross low {cross_day_low:.2f} or MACD fail"
+    elif lifecycle == "Provisional":
+        trigger = f"Near close > {float(high.iloc[-1]):.2f}"
+        invalidation = f"< signal low {float(low.iloc[-1]):.2f}"
+    elif lifecycle in ["Late", "Extended", "Old Cross"]:
+        trigger = "Wait pullback/retest"
+        invalidation = f"< cross low {cross_day_low:.2f}" if not pd.isna(cross_day_low) else "No trade"
     else:
         trigger = "No entry trigger"
         invalidation = "No trade"
 
     return {
-        "Bucket": bucket, "Grade": grade, "Ticker": ticker, "Sector": sector, "Sector ETF": sec_etf,
-        "Price": round(price, 2), "MACD Status": macd_status, "Score": score,
-        "Cross Proximity %": round(proximity, 1), "Hist Trend": hist_label,
+        "Bucket": bucket, "Lifecycle": lifecycle, "Grade": grade, "Ticker": ticker, "Sector": sector, "Sector ETF": sec_etf,
+        "Price": round(price, 2), "MACD Status": macd_status, "Age": age, "Data": "Live overlay" if provisional_live else "Daily",
+        "Score": score, "Cross Proximity %": round(proximity, 1), "Hist Trend": hist_label,
         "Bars Since Cross": bars_since_cross if bars_since_cross is not None else np.nan,
+        "Extension %": round(extension_pct, 2) if not pd.isna(extension_pct) else np.nan,
         "RS vs SPY 20D": round(rs_spy_20 * 100, 2) if not pd.isna(rs_spy_20) else np.nan,
         "RS vs QQQ 20D": round(rs_qqq_20 * 100, 2) if not pd.isna(rs_qqq_20) else np.nan,
         "Stock vs Sector 20D": round(stock_vs_sector_20 * 100, 2) if not pd.isna(stock_vs_sector_20) else np.nan,
@@ -1137,7 +1341,7 @@ def analyze_ticker(ticker: str, data_map: dict, market_regime: str, mode: str, i
         "20D Return %": round(ret20 * 100, 2) if not pd.isna(ret20) else np.nan,
         "63D Return %": round(ret63 * 100, 2) if not pd.isna(ret63) else np.nan,
         "% From 52W High": round(pct_from_52w_high * 100, 2) if not pd.isna(pct_from_52w_high) else np.nan,
-        "Options Proxy": liquid_reason, "Trigger": trigger, "Invalidation": invalidation,
+        "Options Proxy": liquid_reason, "Why": why, "Trigger": trigger, "Invalidation": invalidation,
         "Risk Flags": ", ".join(flags[:5]) if flags else "Clean", "Action": action,
         "Chart": tv_chart_url(ticker),
     }
@@ -1191,7 +1395,7 @@ def render_table(df: pd.DataFrame, height=420):
 st.markdown(
     """
     <div class="sf-hero sf-hero-compact">
-        <div class="sf-hero-title">🦊 SilverFoxFlow Mach 8.0</div>
+        <div class="sf-hero-title">🦊 SilverFoxFlow Mach 8.1</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1199,14 +1403,24 @@ st.markdown(
 
 with st.sidebar:
     st.header("Controls")
-    mode = st.radio("Trading Mode", list(MODE_CONFIG.keys()), index=0)
-    universe_choice = st.selectbox("Tradable Universe", ["Top 100", "Top 150", "Top 200", "Full S&P 500", "Liquid Core Only"], index=1)
-    table_detail = st.radio("Table Detail", ["Clean", "Full"], index=0, horizontal=True)
-    include_etfs = st.checkbox("Include ETFs as tradable symbols", value=True)
-    ignore_market_gate = st.checkbox("Research only: ignore hostile market gate", value=False)
-    period = st.selectbox("History Period", ["6mo", "1y", "2y"], index=1)
-    custom_text = st.text_area("Add custom tickers", placeholder="Example: TSM, ARM, MSTR", height=80)
+    if st.button("Refresh data"):
+        st.cache_data.clear()
+        st.rerun()
+    mode = st.radio("Mode", list(MODE_CONFIG.keys()), index=1)
+    universe_choice = st.selectbox("Universe", ["Top 100", "Top 150", "Top 200", "Full S&P 500", "Liquid Core Only"], index=1)
+    table_detail = st.radio("Detail", ["Clean", "Full"], index=0, horizontal=True)
+    include_etfs = st.checkbox("Include ETFs", value=True)
+    ignore_market_gate = st.checkbox("Research: ignore market gate", value=False)
+    period = st.selectbox("History", ["6mo", "1y", "2y"], index=1)
+    data_mode = st.selectbox("Data", ["Daily + live overlay", "Daily only"], index=0)
+    pre_sensitivity = st.selectbox("Pre-cross", ["Balanced", "Strict", "Early"], index=0)
+    auto_refresh = st.selectbox("Auto refresh", ["Off", "5 min", "15 min"], index=0)
+    custom_text = st.text_area("Custom tickers", placeholder="TSM, ARM, MSTR", height=70)
     st.caption("Earnings: check manually.")
+
+if auto_refresh != "Off":
+    ms = 300000 if auto_refresh == "5 min" else 900000
+    st.markdown(f"<script>setTimeout(() => window.location.reload(), {ms});</script>", unsafe_allow_html=True)
 
 custom_tickers = []
 if custom_text.strip():
@@ -1218,8 +1432,17 @@ else:
     candidate_base = sorted(set(SP500_TICKERS) | set(EXTRA_LIQUID_OPTIONS) | set(custom_tickers))
 
 all_download_tickers = sorted(set(candidate_base) | set(CORE_ETFS))
-with st.spinner(f"Downloading history for {len(all_download_tickers)} symbols and ranking the tradable universe..."):
-    history = download_history(all_download_tickers, period=period, interval="1d")
+with st.spinner(f"Downloading history for {len(all_download_tickers)} symbols..."):
+    history_raw = download_history(all_download_tickers, period=period, interval="1d")
+
+intraday_latest = {}
+use_live_overlay = data_mode == "Daily + live overlay"
+if use_live_overlay:
+    with st.spinner("Updating live overlay..."):
+        intraday_latest = download_intraday_latest(all_download_tickers, period="5d", interval="15m")
+    history = overlay_intraday_on_daily(history_raw, intraday_latest)
+else:
+    history = history_raw
 
 regime, call_trading, best_action, market_df, market_points = analyze_market_regime(history)
 spy_close = get_series(history.get("SPY", pd.DataFrame()), "Close")
@@ -1238,22 +1461,23 @@ scan_tickers = [t for t in scan_tickers if t in history]
 rows = []
 with st.spinner(f"Running Mach 8.0 logic on {len(scan_tickers)} ranked symbols..."):
     for ticker in scan_tickers:
-        row = analyze_ticker(ticker, history, regime, mode, ignore_market_gate=ignore_market_gate)
+        row = analyze_ticker(ticker, history, regime, mode, ignore_market_gate=ignore_market_gate, pre_sensitivity=pre_sensitivity, provisional_live=use_live_overlay)
         if row:
             rows.append(row)
 scan_df = pd.DataFrame(rows)
 
 if not scan_df.empty:
-    bucket_order = {"A+ Pre-Cross Setups": 0, "Confirmed Trade Candidates": 1, "Failed / Exit Warnings": 2, "Watchlist / Caution": 3, "Rejected / Full Scan": 4}
+    bucket_order = {"A+ Pre-Cross Setups": 0, "Confirmed Trade Candidates": 1, "Provisional / Near Close": 2, "Late / Learning": 3, "Failed / Exit Warnings": 4, "Watchlist / Caution": 5, "Rejected / Full Scan": 6}
     scan_df["_bucket_order"] = scan_df["Bucket"].map(bucket_order).fillna(9)
     scan_df = scan_df.sort_values(["_bucket_order", "Score", "Cross Proximity %"], ascending=[True, False, False]).drop(columns=["_bucket_order"])
 
-col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Market Regime", regime)
-col2.metric("Call Trading", call_trading)
+col1, col2, col3, col4, col5, col6 = st.columns(6)
+col1.metric("Market", regime)
+col2.metric("Calls", call_trading)
 col3.metric("Mode", mode)
 col4.metric("Scanned", len(scan_tickers))
-col5.metric("Market Score", f"{market_points} / 8")
+col5.metric("Score", f"{market_points} / 8")
+col6.metric("Data", latest_data_label(history, intraday_latest))
 if regime == "HOSTILE" and mode == "Recovery" and not ignore_market_gate:
     st.error("Call trading OFF.")
 elif regime == "NEUTRAL":
@@ -1267,23 +1491,26 @@ if scan_df.empty:
 
 pre_df = scan_df[scan_df["Bucket"] == "A+ Pre-Cross Setups"].copy()
 confirmed_df = scan_df[scan_df["Bucket"] == "Confirmed Trade Candidates"].copy()
+provisional_df = scan_df[scan_df["Bucket"] == "Provisional / Near Close"].copy()
+late_df = scan_df[scan_df["Bucket"] == "Late / Learning"].copy()
 failed_df = scan_df[scan_df["Bucket"] == "Failed / Exit Warnings"].copy()
 watch_df = scan_df[scan_df["Bucket"] == "Watchlist / Caution"].copy()
 rejected_df = scan_df[scan_df["Bucket"] == "Rejected / Full Scan"].copy()
 
-s1, s2, s3, s4, s5 = st.columns(5)
-s1.metric("A+ Pre-Cross", len(pre_df))
-s2.metric("Confirmed", len(confirmed_df))
-s3.metric("Failed / Exit", len(failed_df))
-s4.metric("Watch/Caution", len(watch_df))
-s5.metric("Rejected", len(rejected_df))
+s1, s2, s3, s4, s5, s6 = st.columns(6)
+s1.metric("Pre-Cross", len(pre_df))
+s2.metric("Fresh", len(confirmed_df))
+s3.metric("Provisional", len(provisional_df))
+s4.metric("Late", len(late_df))
+s5.metric("Failed", len(failed_df))
+s6.metric("Watch", len(watch_df))
 
 st.markdown("---")
 st.subheader("Command Center")
 left, right = st.columns([2, 1])
 with left:
     st.markdown("#### Best Names")
-    best_df = pd.concat([pre_df, confirmed_df], ignore_index=True).sort_values("Score", ascending=False)
+    best_df = pd.concat([pre_df, confirmed_df, provisional_df], ignore_index=True).sort_values("Score", ascending=False)
     render_table(best_df.head(8), height=320)
 with right:
     st.markdown("#### Rules")
@@ -1293,27 +1520,59 @@ with right:
     st.write("**Exit:** failed cross / invalidation")
     st.write("**Options:** liquid 30–60 DTE")
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["A+ Pre-Cross", "Confirmed", "Failed / Exit", "Watchlist", "Sector / Market", "Full Scan", "Exports / Journal"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["Pre-Cross", "Fresh", "Provisional", "Late", "Failed", "Watchlist", "Audit", "Market", "Exports"])
 
 with tab1:
-    st.header("A+ Pre-Cross Setups")
+    st.header("Pre-Cross")
     render_table(pre_df, height=520)
 
 with tab2:
-    st.header("Confirmed Trade Candidates")
+    st.header("Fresh Confirmed")
     render_table(confirmed_df, height=520)
 
 with tab3:
-    st.header("Failed Cross / Exit Warnings")
-    render_table(failed_df, height=520)
+    st.header("Provisional")
+    render_table(provisional_df, height=520)
 
 with tab4:
-    st.header("Watchlist / Caution")
-    render_table(watch_df.sort_values("Score", ascending=False), height=620)
+    st.header("Late / Learning")
+    render_table(late_df.sort_values("Score", ascending=False), height=560)
 
 with tab5:
-    st.header("Sector Leadership + Market Regime")
-    st.subheader("Market ETFs")
+    st.header("Failed")
+    render_table(failed_df, height=560)
+
+with tab6:
+    st.header("Watchlist")
+    render_table(watch_df.sort_values("Score", ascending=False), height=620)
+
+with tab7:
+    st.header("Ticker Audit")
+    audit_default = "CVX" if "CVX" in scan_df["Ticker"].values else str(scan_df["Ticker"].iloc[0])
+    audit_ticker = st.text_input("Ticker", value=audit_default).upper().strip()
+    if audit_ticker:
+        if audit_ticker not in scan_df["Ticker"].values:
+            audit_row = analyze_ticker(audit_ticker, history, regime, mode, ignore_market_gate=ignore_market_gate, pre_sensitivity=pre_sensitivity, provisional_live=use_live_overlay)
+            audit_df = pd.DataFrame([audit_row]) if audit_row else pd.DataFrame()
+        else:
+            audit_df = scan_df[scan_df["Ticker"] == audit_ticker].copy()
+        if audit_df.empty:
+            st.info("No data.")
+        else:
+            r = audit_df.iloc[0]
+            a1, a2, a3, a4 = st.columns(4)
+            a1.metric("Lifecycle", r.get("Lifecycle", "—"))
+            a2.metric("Grade", r.get("Grade", "—"))
+            a3.metric("Age", r.get("Age", "—"))
+            a4.metric("Score", int(r.get("Score", 0)))
+            st.write(f"**Why:** {r.get('Why', '—')}")
+            st.write(f"**Trigger:** {r.get('Trigger', '—')}")
+            st.write(f"**Invalidation:** {r.get('Invalidation', '—')}")
+            render_table(audit_df, height=180)
+
+with tab8:
+    st.header("Market")
+    st.subheader("ETFs")
     st.dataframe(linked_display_df(market_df), use_container_width=True, hide_index=True, column_config=linked_column_config())
     sec_rows = []
     for sec, etf in SECTOR_TO_ETF.items():
@@ -1322,30 +1581,30 @@ with tab5:
         state, rs = sector_state(etf, history, spy_ret20)
         sec_rows.append({"Sector": sec, "ETF": etf, "State": state, "RS vs SPY 20D %": round(rs * 100, 2) if not pd.isna(rs) else np.nan})
     sec_df = pd.DataFrame(sec_rows).sort_values("RS vs SPY 20D %", ascending=False, na_position="last")
-    st.subheader("Sector Rotation")
+    st.subheader("Sectors")
     st.dataframe(linked_display_df(sec_df), use_container_width=True, hide_index=True, column_config=linked_column_config())
-    st.subheader("Tradability Ranking")
+    st.subheader("Universe Rank")
     rank_display = ranked_universe.head(250).copy()
     if not rank_display.empty:
         rank_display["Avg $Vol 20D"] = rank_display["Avg $Vol 20D"].round(0).astype("int64")
     st.dataframe(linked_display_df(rank_display), use_container_width=True, hide_index=True, height=520, column_config=linked_column_config())
-
-with tab6:
-    st.header("Full Scan")
+    st.subheader("Full Scan")
     render_table(scan_df, height=720)
 
-with tab7:
-    st.header("Exports / Trade Journal")
-    st.download_button("Download Full Mach 8.0 Scan CSV", make_download(scan_df), "silverfoxflow_mach8_full_scan.csv", "text/csv")
-    st.download_button("Download A+ Pre-Cross CSV", make_download(pre_df), "silverfoxflow_mach8_a_plus_precross.csv", "text/csv")
-    st.download_button("Download Confirmed Candidates CSV", make_download(confirmed_df), "silverfoxflow_mach8_confirmed.csv", "text/csv")
-    st.download_button("Download Failed Cross Warnings CSV", make_download(failed_df), "silverfoxflow_mach8_failed_cross.csv", "text/csv")
+with tab9:
+    st.header("Exports")
+    st.download_button("Full Scan CSV", make_download(scan_df), "silverfoxflow_mach8_1_full_scan.csv", "text/csv")
+    st.download_button("Pre-Cross CSV", make_download(pre_df), "silverfoxflow_mach8_1_precross.csv", "text/csv")
+    st.download_button("Fresh CSV", make_download(confirmed_df), "silverfoxflow_mach8_1_fresh.csv", "text/csv")
+    st.download_button("Provisional CSV", make_download(provisional_df), "silverfoxflow_mach8_1_provisional.csv", "text/csv")
+    st.download_button("Late CSV", make_download(late_df), "silverfoxflow_mach8_1_late.csv", "text/csv")
+    st.download_button("Failed CSV", make_download(failed_df), "silverfoxflow_mach8_1_failed.csv", "text/csv")
     journal_cols = ["Date", "Ticker", "Grade At Entry", "Entry Type", "Option Contract", "Entry Price", "Stop Rule", "Target", "Exit Price", "Result %", "Reason Entered", "Reason Exited", "Screenshot Link", "Notes"]
     journal_template = pd.DataFrame(columns=journal_cols)
-    st.download_button("Download Trade Journal Template CSV", make_download(journal_template), "silverfoxflow_trade_journal_template.csv", "text/csv")
+    st.download_button("Journal Template CSV", make_download(journal_template), "silverfoxflow_trade_journal_template.csv", "text/csv")
     with st.expander("Rules", expanded=False):
-        st.write("1. A+ Pre-Cross = watchlist only.")
-        st.write("2. No calls when Recovery Mode + HOSTILE market.")
-        st.write("3. Check earnings before entry.")
-        st.write("4. Exit on failed cross or invalidation.")
-        st.write("5. Set option loss cap before entry.")
+        st.write("Pre-Cross = watch only.")
+        st.write("Provisional = wait near close.")
+        st.write("Fresh = possible trade.")
+        st.write("Late = no chase.")
+        st.write("Failed = exit/avoid.")
