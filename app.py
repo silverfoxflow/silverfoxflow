@@ -1,4 +1,4 @@
-# SilverFoxFlow Mach 8.1 — Balanced Lifecycle MACD Scanner
+# SilverFoxFlow Mach 8.1.1 — Balanced Lifecycle MACD Scanner
 # Run: streamlit run app.py
 # Purpose: fewer trades, stronger setups, faster failed-cross warnings.
 
@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-st.set_page_config(page_title="SilverFoxFlow Mach 8.1", page_icon="🦊", layout="wide")
+st.set_page_config(page_title="SilverFoxFlow Mach 8.1.1", page_icon="🦊", layout="wide")
 
 
 # ============================================================
@@ -1247,6 +1247,8 @@ def analyze_ticker(
         score += 5
     if hard_failed:
         score = min(score, 18)
+    if not above200:
+        score = min(score, 25)
     if extended:
         score = min(score, 72)
     score = int(max(0, min(100, round(score))))
@@ -1257,6 +1259,11 @@ def analyze_ticker(
         lifecycle, grade, bucket, action, macd_status, why = (
             "Failed", "F Failed Cross", "Failed / Exit Warnings",
             "EXIT / AVOID", f"Failed cross ({bars_since_cross} bars ago)", "Cross rolled over or lost signal low."
+        )
+    elif not above200:
+        lifecycle, grade, bucket, action, macd_status, why = (
+            "Under 200", "X Below 200EMA", "No Trade / Below 200EMA",
+            "NO CALL TRADE", "Below 200EMA", "Trend gate failed."
         )
     elif provisional_cross:
         lifecycle, grade, bucket, action, macd_status, why = (
@@ -1409,7 +1416,7 @@ def render_table(df: pd.DataFrame, height=420):
 st.markdown(
     """
     <div class="sf-hero sf-hero-compact">
-        <div class="sf-hero-title">🦊 SilverFoxFlow Mach 8.1</div>
+        <div class="sf-hero-title">🦊 SilverFoxFlow Mach 8.1.1</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -1481,7 +1488,7 @@ with st.spinner(f"Running Mach 8.0 logic on {len(scan_tickers)} ranked symbols..
 scan_df = pd.DataFrame(rows)
 
 if not scan_df.empty:
-    bucket_order = {"A+ Pre-Cross Setups": 0, "Confirmed Trade Candidates": 1, "Provisional / Near Close": 2, "Late / Learning": 3, "Failed / Exit Warnings": 4, "Watchlist / Caution": 5, "Rejected / Full Scan": 6}
+    bucket_order = {"A+ Pre-Cross Setups": 0, "Confirmed Trade Candidates": 1, "Provisional / Near Close": 2, "Late / Learning": 3, "Failed / Exit Warnings": 4, "No Trade / Below 200EMA": 5, "Watchlist / Caution": 6, "Rejected / Full Scan": 7}
     scan_df["_bucket_order"] = scan_df["Bucket"].map(bucket_order).fillna(9)
     scan_df = scan_df.sort_values(["_bucket_order", "Score", "Cross Proximity %"], ascending=[True, False, False]).drop(columns=["_bucket_order"])
 
@@ -1508,23 +1515,28 @@ confirmed_df = scan_df[scan_df["Bucket"] == "Confirmed Trade Candidates"].copy()
 provisional_df = scan_df[scan_df["Bucket"] == "Provisional / Near Close"].copy()
 late_df = scan_df[scan_df["Bucket"] == "Late / Learning"].copy()
 failed_df = scan_df[scan_df["Bucket"] == "Failed / Exit Warnings"].copy()
+under200_df = scan_df[scan_df["Bucket"] == "No Trade / Below 200EMA"].copy()
 watch_df = scan_df[scan_df["Bucket"] == "Watchlist / Caution"].copy()
 rejected_df = scan_df[scan_df["Bucket"] == "Rejected / Full Scan"].copy()
 
-s1, s2, s3, s4, s5, s6 = st.columns(6)
+s1, s2, s3, s4, s5, s6, s7 = st.columns(7)
 s1.metric("Pre-Cross", len(pre_df))
 s2.metric("Fresh", len(confirmed_df))
 s3.metric("Provisional", len(provisional_df))
 s4.metric("Late", len(late_df))
 s5.metric("Failed", len(failed_df))
-s6.metric("Watch", len(watch_df))
+s6.metric("Under 200", len(under200_df))
+s7.metric("Watch", len(watch_df))
 
 st.markdown("---")
 st.subheader("Command Center")
 left, right = st.columns([2, 1])
 with left:
     st.markdown("#### Best Names")
-    best_df = pd.concat([pre_df, confirmed_df, provisional_df], ignore_index=True).sort_values("Score", ascending=False)
+    best_df = pd.concat([pre_df, confirmed_df, provisional_df], ignore_index=True)
+    if not best_df.empty and "Above 200EMA" in best_df.columns:
+        best_df = best_df[best_df["Above 200EMA"] == "Yes"]
+    best_df = best_df.sort_values("Score", ascending=False)
     render_table(best_df.head(8), height=320)
 with right:
     st.markdown("#### Rules")
@@ -1534,7 +1546,7 @@ with right:
     st.write("**Exit:** failed cross / invalidation")
     st.write("**Options:** liquid 30–60 DTE")
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["Pre-Cross", "Fresh", "Provisional", "Late", "Failed", "Watchlist", "Audit", "Market", "Exports"])
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs(["Pre-Cross", "Fresh", "Provisional", "Late", "Failed", "Under 200", "Watchlist", "Audit", "Market", "Exports"])
 
 with tab1:
     st.header("Pre-Cross")
@@ -1557,10 +1569,14 @@ with tab5:
     render_table(failed_df, height=560)
 
 with tab6:
+    st.header("Under 200")
+    render_table(under200_df.sort_values("Score", ascending=False), height=560)
+
+with tab7:
     st.header("Watchlist")
     render_table(watch_df.sort_values("Score", ascending=False), height=620)
 
-with tab7:
+with tab8:
     st.header("Ticker Audit")
     audit_default = "CVX" if "CVX" in scan_df["Ticker"].values else str(scan_df["Ticker"].iloc[0])
     audit_ticker = st.text_input("Ticker", value=audit_default).upper().strip()
@@ -1584,7 +1600,7 @@ with tab7:
             st.write(f"**Invalidation:** {r.get('Invalidation', '—')}")
             render_table(audit_df, height=180)
 
-with tab8:
+with tab9:
     st.header("Market")
     st.subheader("ETFs")
     st.dataframe(linked_display_df(market_df), use_container_width=True, hide_index=True, column_config=linked_column_config())
@@ -1605,7 +1621,7 @@ with tab8:
     st.subheader("Full Scan")
     render_table(scan_df, height=720)
 
-with tab9:
+with tab10:
     st.header("Exports")
     st.download_button("Full Scan CSV", make_download(scan_df), "silverfoxflow_mach8_1_full_scan.csv", "text/csv")
     st.download_button("Pre-Cross CSV", make_download(pre_df), "silverfoxflow_mach8_1_precross.csv", "text/csv")
