@@ -906,21 +906,35 @@ def overlay_intraday_on_daily(history: dict, intraday_latest: dict) -> dict:
     return out
 
 
+def _safe_naive_timestamp(value):
+    """Normalize mixed yfinance timestamps so max() never compares tz-aware vs tz-naive."""
+    try:
+        ts = pd.Timestamp(value)
+        if pd.isna(ts):
+            return None
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert(None)
+        return ts
+    except Exception:
+        return None
+
+
 def latest_data_label(history: dict, intraday_latest: dict | None = None) -> str:
     stamps = []
     for df in history.values():
         if df is not None and not df.empty:
-            stamps.append(pd.Timestamp(df.index[-1]))
+            ts = _safe_naive_timestamp(df.index[-1])
+            if ts is not None:
+                stamps.append(ts)
     for live in (intraday_latest or {}).values():
         if live and "Timestamp" in live:
-            stamps.append(pd.Timestamp(live["Timestamp"]))
+            ts = _safe_naive_timestamp(live["Timestamp"])
+            if ts is not None:
+                stamps.append(ts)
     if not stamps:
         return "No data"
     ts = max(stamps)
-    try:
-        return ts.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return str(ts)
+    return ts.strftime("%Y-%m-%d %H:%M")
 
 def get_series(df: pd.DataFrame, col: str) -> pd.Series:
     if df is None or df.empty or col not in df.columns:
