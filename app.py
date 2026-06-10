@@ -1,6 +1,6 @@
-# SilverFoxFlow Mach 8.5.0 — Simple MACD Zone Engine
+# SilverFoxFlow Mach 8.5.1 — Clean Trade Filter
 # Run: streamlit run app.py
-# Purpose: simple category-first homepage: below-zero curl, fresh cross, zero-line reset, above-zero setups, avoid/no chase.
+# Purpose: simple category-first home, clean actions, and clear MACD history score.
 
 import math
 import numpy as np
@@ -1630,12 +1630,12 @@ SECTION_ORDER = [
     "AVOID / NO CHASE",
 ]
 
-HOME_COLUMNS = ["Ticker", "MACD Score", "Price", "Trigger", "Action", "Risk"]
+HOME_COLUMNS = ["Ticker", "MACD HIST", "SETUP", "Price", "Trigger", "Action", "Risk"]
 CARD_COLUMNS = [
-    "Section", "Ticker", "Sector", "Price", "MACD Score", "Setup Score", "Timing",
+    "Section", "Ticker", "Sector", "Price", "MACD HIST", "SETUP", "Timing",
     "Trigger", "Invalidation", "Action", "Risk", "Reason"
 ]
-SLEEP_COLUMNS = ["Ticker", "MACD Score", "Price", "Action", "Risk", "Reason"]
+SLEEP_COLUMNS = ["Ticker", "MACD HIST", "SETUP", "Price", "Action", "Risk", "Reason"]
 
 
 def _row_value(row, key, default="—"):
@@ -1765,23 +1765,46 @@ def section_rank(section):
         return 99
 
 
+def clean_trade_ok(row):
+    section = str(_row_value(row, "Section", ""))
+    score = _macd_score(row)
+    setup = _as_int(_row_value(row, "Setup Score", _row_value(row, "Score", 0)))
+    flags = str(_row_value(row, "Risk Flags", "Clean"))
+    above50 = str(_row_value(row, "Above 50SMA", "No")) == "Yes"
+    above200 = str(_row_value(row, "Above 200EMA", "No")) == "Yes"
+    sector = str(_row_value(row, "Sector State", "Unknown"))
+    is_clean = flags == "Clean" or flags.strip() == ""
+    strong_hist = (not pd.isna(score)) and score >= 75
+    strong_now = setup >= 70
+    good_section = section in ["BELOW ZERO FRESH CROSS", "BELOW ZERO CURL", "ZERO LINE"]
+    return all([good_section, strong_hist, strong_now, above50, above200, sector != "Weak", is_clean])
+
+
 def quick_action(row):
     section = str(_row_value(row, "Section", ""))
     score = _macd_score(row)
-    if section == "BELOW ZERO CURL":
+    above50 = str(_row_value(row, "Above 50SMA", "No")) == "Yes"
+
+    if section == "AVOID / NO CHASE" or is_hard_block(row):
+        return "AVOID"
+
+    if clean_trade_ok(row):
+        if section == "BELOW ZERO FRESH CROSS":
+            return "TRADE"
         return "WATCH"
-    if section == "BELOW ZERO FRESH CROSS":
-        return "REVIEW"
-    if section == "ZERO LINE":
-        return "WATCH"
-    if section == "ABOVE ZERO CURL":
-        return "LOW WATCH"
-    if section == "ABOVE ZERO FRESH CROSS":
-        return "LOW REVIEW"
-    if section == "AVOID / NO CHASE":
-        return "SKIP"
-    if not pd.isna(score) and score >= 75:
-        return "WATCH"
+
+    if section in ["BELOW ZERO FRESH CROSS", "BELOW ZERO CURL", "ZERO LINE"]:
+        if not above50:
+            return "WAIT"
+        if not pd.isna(score) and score >= 60:
+            return "WATCH"
+        return "WAIT"
+
+    if section in ["ABOVE ZERO FRESH CROSS", "ABOVE ZERO CURL"]:
+        if not pd.isna(score) and score >= 75 and above50:
+            return "WATCH"
+        return "WAIT"
+
     return "WAIT"
 
 
@@ -1848,6 +1871,8 @@ def enrich_decisions(df: pd.DataFrame) -> pd.DataFrame:
     out["Decision"] = out["Section"]
     out["MACD Score"] = out.apply(_macd_score, axis=1)
     out["Setup Score"] = pd.to_numeric(out.get("Score", 0), errors="coerce").fillna(0).astype(int)
+    out["MACD HIST"] = out["MACD Score"]
+    out["SETUP"] = out["Setup Score"]
     out["Action"] = out.apply(quick_action, axis=1)
     out["Risk"] = out.apply(risk_short, axis=1)
     out["Reason"] = out.apply(simple_reason, axis=1)
@@ -1873,10 +1898,12 @@ def linked_column_config(extra=None):
         "Ticker": st.column_config.LinkColumn("Ticker", display_text=r"symbol=([^&]+)", width="small"),
         "ETF": st.column_config.LinkColumn("ETF", display_text=r"symbol=([^&]+)", width="small"),
         "Sector ETF": st.column_config.LinkColumn("Sector ETF", display_text=r"symbol=([^&]+)", width="small"),
-        "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100),
-        "Setup Score": st.column_config.ProgressColumn("Setup", min_value=0, max_value=100),
-        "Historical Edge": st.column_config.ProgressColumn("History", min_value=0, max_value=100),
-        "MACD Score": st.column_config.ProgressColumn("MACD", min_value=0, max_value=100),
+        "Score": st.column_config.NumberColumn("Score", min_value=0, max_value=100, format="%d"),
+        "Setup Score": st.column_config.NumberColumn("Setup", min_value=0, max_value=100, format="%d"),
+        "SETUP": st.column_config.NumberColumn("SETUP", min_value=0, max_value=100, format="%d"),
+        "Historical Edge": st.column_config.NumberColumn("History", min_value=0, max_value=100, format="%d"),
+        "MACD Score": st.column_config.NumberColumn("MACD HIST", min_value=0, max_value=100, format="%d"),
+        "MACD HIST": st.column_config.NumberColumn("MACD HIST", min_value=0, max_value=100, format="%d"),
     }
     if extra:
         cfg.update(extra)
@@ -1915,8 +1942,8 @@ def render_trade_card(row):
     ticker = str(_row_value(row, "Ticker", "—"))
     section = str(_row_value(row, "Section", "—"))
     timing = str(_row_value(row, "Timing", "—"))
-    score = _row_value(row, "MACD Score", "—")
-    setup = _row_value(row, "Setup Score", _row_value(row, "Score", "—"))
+    score = _row_value(row, "MACD HIST", _row_value(row, "MACD Score", "—"))
+    setup = _row_value(row, "SETUP", _row_value(row, "Setup Score", _row_value(row, "Score", "—")))
     trigger = str(_row_value(row, "Trigger", "—"))
     invalidation = str(_row_value(row, "Invalidation", "—"))
     action = str(_row_value(row, "Action", "—"))
@@ -1927,8 +1954,8 @@ def render_trade_card(row):
     st.markdown(f"### [{ticker}]({chart})")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Section", section)
-    c2.metric("MACD", score)
-    c3.metric("Setup", setup)
+    c2.metric("MACD HIST", score)
+    c3.metric("SETUP", setup)
     c4.metric("Action", action)
     st.write(f"**Why:** {reason}")
     st.write(f"**Timing:** {timing}")
@@ -1940,12 +1967,27 @@ def render_trade_card(row):
 def today_call(regime, call_trading, sections):
     if regime == "HOSTILE" or call_trading == "OFF":
         return "CASH", "Market off"
+
+    pool = []
     for section in ["BELOW ZERO FRESH CROSS", "BELOW ZERO CURL", "ZERO LINE", "ABOVE ZERO FRESH CROSS", "ABOVE ZERO CURL"]:
         df = sections.get(section, pd.DataFrame())
-        if not df.empty:
-            top = df.sort_values(["MACD Score", "Setup Score"], ascending=[False, False], na_position="last").iloc[0]
-            return str(top.get("Action", "WATCH")), str(top.get("Ticker", "None"))
-    return "CASH", "None"
+        if df is not None and not df.empty:
+            pool.append(df)
+    if not pool:
+        return "CASH", "None"
+
+    all_df = pd.concat(pool, ignore_index=True)
+    trade_df = all_df[all_df["Action"] == "TRADE"].copy()
+    if not trade_df.empty:
+        top = trade_df.sort_values(["MACD Score", "Setup Score"], ascending=[False, False], na_position="last").iloc[0]
+        return "TRADE", str(top.get("Ticker", "None"))
+
+    watch_df = all_df[all_df["Action"] == "WATCH"].copy()
+    if not watch_df.empty:
+        top = watch_df.sort_values(["MACD Score", "Setup Score"], ascending=[False, False], na_position="last").iloc[0]
+        return "WATCH", str(top.get("Ticker", "None"))
+
+    return "WAIT", "None"
 
 # ============================================================
 # UI
@@ -1964,8 +2006,8 @@ st.markdown(
     }
     </style>
     <div class="sf-hero sf-hero-compact">
-        <div class="sf-hero-title">🦊 SilverFoxFlow Mach 8.5</div>
-        <div class="sf-hero-sub">Simple MACD Zone Engine</div>
+        <div class="sf-hero-title">🦊 SilverFoxFlow Mach 8.5.1</div>
+        <div class="sf-hero-sub">Clean MACD Filter</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -2090,7 +2132,7 @@ st.markdown(
     <div class="sf-clean-note">
         <b>Scanned:</b> {len(scan_tickers)} &nbsp; | &nbsp;
         <b>Data:</b> {latest_data_label(history, intraday_latest)} &nbsp; | &nbsp;
-        <b>Rule:</b> Below zero first. No chase.
+        <b>Rule:</b> Below zero first. Clean trades only.
     </div>
     """,
     unsafe_allow_html=True,
@@ -2130,7 +2172,7 @@ with st.expander("Ticker Card", expanded=False):
     else:
         labels = []
         for _, r in watch_pool.iterrows():
-            labels.append(f"{r.get('Ticker')} — {r.get('Section')} — MACD {r.get('MACD Score')}")
+            labels.append(f"{r.get('Ticker')} — {r.get('Section')} — HIST {r.get('MACD HIST')}")
         selected_label = st.selectbox("Ticker", labels)
         selected_ticker = selected_label.split(" — ")[0]
         selected_row = watch_pool[watch_pool["Ticker"] == selected_ticker].iloc[0]
@@ -2148,13 +2190,13 @@ with st.expander("Advanced", expanded=False):
     st.dataframe(linked_display_df(market_df), use_container_width=True, hide_index=True, column_config=linked_column_config())
 
 with st.expander("Exports", expanded=False):
-    st.download_button("Full Scan CSV", make_download(scan_df), "silverfoxflow_mach8_5_full_scan.csv", "text/csv")
+    st.download_button("Full Scan CSV", make_download(scan_df), "silverfoxflow_mach8_5_1_full_scan.csv", "text/csv")
     for name in SECTION_ORDER:
         file_name = name.lower().replace(" / ", "_").replace(" ", "_").replace("-", "_")
-        st.download_button(f"{name} CSV", make_download(sections[name]), f"silverfoxflow_mach8_5_{file_name}.csv", "text/csv")
-    st.download_button("MACD Score CSV", make_download(edge_df), "silverfoxflow_mach8_5_macd_score.csv", "text/csv")
+        st.download_button(f"{name} CSV", make_download(sections[name]), f"silverfoxflow_mach8_5_1_{file_name}.csv", "text/csv")
+    st.download_button("MACD Score CSV", make_download(edge_df), "silverfoxflow_mach8_5_1_macd_score.csv", "text/csv")
     journal_cols = [
-        "Date", "Ticker", "Section", "MACD Score", "Setup Score", "Entry Type",
+        "Date", "Ticker", "Section", "MACD HIST", "SETUP", "Entry Type",
         "Option Contract", "Entry Price", "Stop Rule", "Target", "Exit Price", "Result %",
         "Reason Entered", "Reason Exited", "Mistake Tag", "Screenshot Link", "Notes"
     ]
